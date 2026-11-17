@@ -30,7 +30,7 @@ function modelOf(cfg, override) {
   } catch { return ''; }
 }
 
-async function httpJson(url, { method = 'POST', apiKey, body, timeout = DEFAULT_TIMEOUT } = {}) {
+async function httpJson(url, { method = 'POST', apiKey, body, timeout = DEFAULT_TIMEOUT, authScheme = 'Bearer' } = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeout);
   try {
@@ -38,7 +38,7 @@ async function httpJson(url, { method = 'POST', apiKey, body, timeout = DEFAULT_
       method,
       headers: {
         'Content-Type': 'application/json',
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        ...(apiKey ? { Authorization: `${authScheme} ${apiKey}` } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: ctrl.signal,
@@ -169,6 +169,22 @@ export function createAi(db) {
     const cfg = await getActiveConfig('image');
     if (!cfg) throw new Error('尚未配置图像模型，请先在设置里添加');
 
+    // provider=fal：fal 图像接口同步返回 JSON，含 images[].url
+    if (cfg.provider === 'fal') {
+      const model = modelOf(cfg, o.model);
+      const base = String(cfg.base_url || '').replace(/\/+$/, '') || 'https://fal.run';
+      const url = joinUrl(base, '/' + model.replace(/^\/+/, ''));
+      const input = { prompt: o.negativePrompt ? `${o.prompt}\n\n负面约束：${o.negativePrompt}` : o.prompt };
+      if (o.size) input.image_size = o.size;
+      if (o.referenceImage) input.image_url = o.referenceImage;
+
+      const data = await httpJson(url, { apiKey: cfg.api_key, body: input, timeout: 180_000, authScheme: 'Key' });
+      const first = Array.isArray(data?.images) ? data.images[0] : null;
+      const out = first?.url || data?.image?.url || data?.url || '';
+      if (!out) throw new Error('fal 图像接口未返回图片地址：' + JSON.stringify(data).slice(0, 300));
+      return { url: out, model, raw: data };
+    }
+
     const model = modelOf(cfg, o.model);
     const url = joinUrl(cfg.base_url, cfg.endpoint || '/images/generations');
 
@@ -191,6 +207,23 @@ export function createAi(db) {
   async function video(o) {
     const cfg = await getActiveConfig('video');
     if (!cfg) throw new Error('尚未配置视频模型，请先在设置里添加');
+
+    // provider=fal 走 fal.ai 队列 API（GPU 云）：POST /{model_id} 提交任务，返回 request_id
+    if (cfg.provider === 'fal') {
+      const model = modelOf(cfg, o.model);
+      const base = String(cfg.base_url || '').replace(/\/+$/, '') || 'https://queue.fal.run';
+      const createUrl = joinUrl(base, '/' + model.replace(/^\/+/, ''));
+      const input = { prompt: o.prompt };
+      if (o.image) input.image_url = o.image;
+      if (o.duration) input.duration = o.duration;
+      const data = await httpJson(createUrl, { apiKey: cfg.api_key, body: input, timeout: 60_000 });
+      const requestId = data?.request_id || data?.id || '';
+      if (!requestId) {
+        throw new Error('fal 未返回 request_id：' + JSON.stringify(data).slice(0, 300));
+      }
+      // fal 的 status_fetch_url / status_url 指向轮询端点，记录在 raw 里，videoStatus 会再读配置
+      return { taskId: String(requestId), status: 'processing', url: null, model, raw: data };
+    }
 
     const model = modelOf(cfg, o.model);
     const createUrl = joinUrl(cfg.base_url, cfg.endpoint || '/videos');
@@ -219,9 +252,32 @@ export function createAi(db) {
     return { taskId: String(taskId), status: 'processing', url: null, model, raw: data };
   }
 
-  async function videoStatus(taskId) {
+  async function videoStatus(taskId, model) {
     const cfg = await getActiveConfig('video');
     if (!cfg) throw new Error('尚未配置视频模型');
+
+    // provider=fal：轮询 https://queue.fal.run/{model_id}/requests/{request_id}/status
+    if (cfg.provider === 'fal') {
+      const m = model || cfg.default_model || '';
+      const base = String(cfg.base_url || '').replace(/\/+$/, '') || 'https://queue.fal.run';
+      const url = `${base}/${m.replace(/^\/+/, '')}/requests/${encodeURIComponent(taskId)}/status`;
+      const data = await httpJson(url, { method: 'GET', apiKey: cfg.api_key, authScheme: 'Key' });
+
+      const status = String(data?.status || '').toLowerCase();
+      const outUrl = data?.output?.video_url || data?.output?.url
+        || (Array.isArray(data?.output?.videos) ? data.output.videos[0]?.url : '')
+        || data?.result?.video_url || '';
+
+      const done = ['completed', 'succeeded', 'done', 'finished'].includes(status) || !!outUrl;
+      const failed = ['failed', 'error', 'canceled', 'cancelled'].includes(status);
+
+      return {
+        status: done ? 'completed' : failed ? 'failed' : 'processing',
+        url: outUrl || null,
+        rawStatus: status || 'unknown',
+        raw: data,
+      };
+    }
 
     const tpl = cfg.query_endpoint || '/videos/{taskId}';
     const url = joinUrl(cfg.base_url, tpl.replace('{taskId}', encodeURIComponent(taskId)));
