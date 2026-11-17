@@ -195,7 +195,13 @@ onMounted(boot);
       </header>
 
       <!-- 助手面板 -->
-      <ChatPanel v-if="currentId && chatOpen" ref="chatPanelRef" :drama-id="currentId" :episode-id="currentEpisode" />
+      <ChatPanel
+        v-if="currentId && chatOpen"
+        ref="chatPanelRef"
+        :drama-id="currentId"
+        :episode-id="currentEpisode"
+        @close="chatOpen = false"
+      />
 
       <div class="stage" :class="{ 'with-chat': chatOpen }">
         <Canvas v-if="currentId" ref="canvasRef" :drama-id="currentId" />
@@ -208,11 +214,6 @@ onMounted(boot);
         </div>
         <div v-if="!logs.length" class="line">等待操作…</div>
       </footer>
-
-      <!-- 赞助标识：按小鸡云免费服务器条款要求，站点底部展示并链回官网 -->
-      <div class="sponsor">
-        <a href="https://www.xiaojiyun.com/" target="_blank" rel="noopener noreferrer">由小鸡云赞助</a>
-      </div>
     </main>
   </div>
 </template>
@@ -281,6 +282,19 @@ onMounted(boot);
   justify-content: center; color: var(--txt-3); font-size: 13px;
 }
 
+/* 智能助手悬浮按钮 */
+.chat-btn {
+  position: absolute; right: 18px; top: 66px; z-index: 120;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: linear-gradient(135deg, #4a9eff 0%, #7ab8ff 100%);
+  color: #fff; font-size: 19px; line-height: 1;
+  box-shadow: 0 6px 20px rgba(74, 158, 255, .45);
+  display: flex; align-items: center; justify-content: center;
+  transition: transform .15s, box-shadow .15s;
+}
+.chat-btn:hover { transform: scale(1.06); box-shadow: 0 8px 24px rgba(74, 158, 255, .55); }
+.chat-btn.open { transform: rotate(90deg); }
+
 .logbar {
   height: 116px; flex: 0 0 116px; overflow-y: auto; padding: 10px 18px;
   background: #0e1119; border-top: 1px solid var(--line);
@@ -291,13 +305,4 @@ onMounted(boot);
 .line.err { color: var(--err); }
 .line.warn { color: var(--accent); }
 .ts { color: rgba(255, 255, 255, .22); margin-right: 10px; }
-
-.sponsor {
-  height: 26px; flex: 0 0 26px; display: flex; align-items: center; justify-content: center;
-  background: #0e1119; border-top: 1px solid var(--line);
-}
-.sponsor a {
-  font-size: 11px; color: var(--txt-3); text-decoration: none; letter-spacing: .02em;
-}
-.sponsor a:hover { color: var(--accent); text-decoration: underline; }
 </style>

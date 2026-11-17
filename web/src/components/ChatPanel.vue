@@ -1,15 +1,32 @@
 <script setup>
-import { ref, computed, nextTick, watch } from 'vue';
+import { ref, computed, nextTick, watch, onMounted } from 'vue';
 import { api } from '../api/index.js';
 
 const props = defineProps({ dramaId: Number, episodeId: Number });
+const emit = defineEmits(['close']);
 
 const messages = ref([]);
 const input = ref('');
 const loading = ref(false);
-const panelOpen = ref(false);
+// 由 App 用 v-if 控制渲染：组件一旦挂载即为打开状态
+const panelOpen = ref(true);
 
 const canSend = computed(() => !!input.value.trim() && !loading.value);
+
+/** 欢迎语 + 滚动到底 */
+async function greet() {
+  if (!messages.value.length && props.dramaId) {
+    messages.value.push({
+      role: 'system',
+      content: '你好！我是 DramaForge 智能助手。我可以帮你：\n• 查看/修改角色、场景、道具\n• 拆解分镜、生成剧本\n• 操作无限画布\n\n试着对我说："列出所有角色" 或 "生成第1集剧本"',
+      ts: Date.now(),
+    });
+    await nextTick();
+    scrollBottom();
+  }
+}
+
+onMounted(greet);
 
 async function send() {
   const text = input.value.trim();
@@ -96,21 +113,13 @@ function scrollBottom() {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
-watch(panelOpen, async (val) => {
-  if (val && props.dramaId) {
-    if (!messages.value.length) {
-      messages.value.push({
-        role: 'system',
-        content: '你好！我是 DramaForge 智能助手。我可以帮你：\n• 查看/修改角色、场景、道具\n• 拆解分镜、生成剧本\n• 操作无限画布\n\n试着对我说："列出所有角色" 或 "生成第1集剧本"',
-        ts: Date.now(),
-      });
-    }
-    await nextTick();
-    scrollBottom();
-  }
-});
+watch(() => props.dramaId, async () => {
+  // 切换项目时重置对话，重新生成欢迎语
+  messages.value = [];
+  await greet();
+}, { immediate: false });
 
-defineExpose({ toggle: () => { panelOpen.value = !panelOpen.value; } });
+function closePanel() { emit('close'); }
 </script>
 
 <template>
@@ -118,7 +127,7 @@ defineExpose({ toggle: () => { panelOpen.value = !panelOpen.value; } });
     <div v-if="panelOpen" class="panel">
       <div class="panel-hdr">
         <span class="title">🤖 智能助手</span>
-        <button class="close" @click="panelOpen = false">✕</button>
+        <button class="close" @click="closePanel">✕</button>
       </div>
       <div class="chat-body">
         <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">

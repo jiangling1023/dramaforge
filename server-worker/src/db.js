@@ -119,11 +119,17 @@ export function createDb(env) {
         const conflictCols = onConflict
           ? onConflict.split(',').map((c) => c.trim()).filter(Boolean)
           : [];
-        const excl = conflictCols.length
-          ? cols.filter((c) => !conflictCols.includes(c)).map((c) => `"${c}" = excluded."${c}"`).join(',')
-          : cols.map((c) => `"${c}" = excluded."${c}"`).join(',');
+        // 可更新列 = 非冲突键列；若行为空（如纯桥表全列都是主键），改为 DO NOTHING
+        const updCols = conflictCols.length
+          ? cols.filter((c) => !conflictCols.includes(c))
+          : cols;
+        const updPart = updCols.length
+          ? ` DO UPDATE SET ${updCols.map((c) => `"${c}" = excluded."${c}"`).join(',')}`
+          : '';
         const sql = `INSERT INTO ${table} (${cols.map((c) => `"${c}"`).join(',')}) VALUES (${placeholders})`
-          + (conflictCols.length ? ` ON CONFLICT (${conflictCols.map((c) => `"${c}"`).join(',')}) DO UPDATE SET ${excl}` : '');
+          + (conflictCols.length
+            ? ` ON CONFLICT (${conflictCols.map((c) => `"${c}"`).join(',')})${updPart || ' DO NOTHING'}`
+            : '');
         const res = await DB.prepare(sql).bind(...cols.map((c) => row[c])).run();
         affected += Number(res.meta.changes || 0);
       }
