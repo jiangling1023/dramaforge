@@ -169,6 +169,26 @@ export function createAi(db) {
     const cfg = await getActiveConfig('image');
     if (!cfg) throw new Error('尚未配置图像模型，请先在设置里添加');
 
+    // provider=agnes：OpenAI 兼容，但用 size:"2K" + ratio + extra_body.response_format
+    if (cfg.provider === 'agnes') {
+      const model = modelOf(cfg, o.model);
+      const url = joinUrl(cfg.base_url, cfg.endpoint || '/images/generations');
+      const st = settingsOf(cfg);
+      const body = {
+        model,
+        prompt: o.negativePrompt ? `${o.prompt}\n\n负面约束：${o.negativePrompt}` : o.prompt,
+        size: o.size || st.size || '2K',
+        ratio: o.ratio || st.ratio || '16:9',
+        extra_body: { response_format: 'url' },
+      };
+      if (o.referenceImage) body.image = o.referenceImage;
+      const data = await httpJson(url, { apiKey: cfg.api_key, body, timeout: 180_000 });
+      const first = data?.data?.[0] || {};
+      const out = first.url || (first.b64_json ? `data:image/png;base64,${first.b64_json}` : '') || data?.url || '';
+      if (!out) throw new Error('agnes 图像接口未返回图片地址：' + JSON.stringify(data).slice(0, 300));
+      return { url: out, model, raw: data };
+    }
+
     // provider=fal：fal 图像接口同步返回 JSON，含 images[].url
     if (cfg.provider === 'fal') {
       const model = modelOf(cfg, o.model);
@@ -207,6 +227,34 @@ export function createAi(db) {
   async function video(o) {
     const cfg = await getActiveConfig('video');
     if (!cfg) throw new Error('尚未配置视频模型，请先在设置里添加');
+
+    // provider=agnes：POST /v1/videos 返回 video_id；轮询 GET /agnesapi?video_id=&model_name=
+    if (cfg.provider === 'agnes') {
+      const model = modelOf(cfg, o.model);
+      const st = settingsOf(cfg);
+      const createUrl = joinUrl(cfg.base_url, cfg.endpoint || '/videos');
+      const body = {
+        model,
+        prompt: o.prompt,
+        mode: o.mode || st.mode || 'text',
+        seconds: String(o.duration || st.seconds || 5),
+        size: st.size || '720P',
+        aspect_ratio: o.ratio || st.aspect_ratio || '16:9',
+        n: 1,
+      };
+      if (o.image) {
+        body.mode = 'keyframe';
+        body.first_frame = o.image;
+      }
+      const data = await httpJson(createUrl, { apiKey: cfg.api_key, body, timeout: 120_000 });
+      const taskId = data?.video_id || data?.id || data?.task_id || data?.data?.video_id || '';
+      if (!taskId) {
+        // agnes 队列满/额度不足时返回 {code, message, data:null}，把 message 透传出来
+        const msg = data?.message || data?.error?.message || JSON.stringify(data).slice(0, 200);
+        throw new Error('agnes 视频任务创建失败：' + msg);
+      }
+      return { taskId: String(taskId), status: 'processing', url: null, model, raw: data };
+    }
 
     // provider=fal 走 fal.ai 队列 API（GPU 云）：POST /{model_id} 提交任务，返回 request_id
     if (cfg.provider === 'fal') {
@@ -255,6 +303,31 @@ export function createAi(db) {
   async function videoStatus(taskId, model) {
     const cfg = await getActiveConfig('video');
     if (!cfg) throw new Error('尚未配置视频模型');
+
+    // provider=agnes：GET {origin}/agnesapi?video_id=&model_name= （在 /v1 之外）
+    if (cfg.provider === 'agnes') {
+      const m = model || cfg.default_model || 'agnes-video-2.5-flash';
+      // base_url 形如 https://api.agnes-ai.cn/v1 → 取 origin
+      let origin = String(cfg.base_url || '').replace(/\/+$/, '');
+      origin = origin.replace(/\/v1\/?$/, '');
+      const url = `${origin}/agnesapi?video_id=${encodeURIComponent(taskId)}&model_name=${encodeURIComponent(m)}`;
+      const data = await httpJson(url, { method: 'GET', apiKey: cfg.api_key, timeout: 60_000 });
+
+      const status = String(data?.status || '').toLowerCase();
+      const outUrl = data?.url || data?.video_url || data?.data?.url
+        || (Array.isArray(data?.results?.videos) ? data.results.videos[0]?.url : '')
+        || (Array.isArray(data?.videos) ? data.videos[0]?.url : '');
+
+      const done = ['completed', 'succeeded', 'success', 'done', 'finished'].includes(status) || !!outUrl;
+      const failed = ['failed', 'error', 'canceled', 'cancelled'].includes(status);
+
+      return {
+        status: done ? 'completed' : failed ? 'failed' : 'processing',
+        url: outUrl || null,
+        rawStatus: status || 'unknown',
+        raw: data,
+      };
+    }
 
     // provider=fal：轮询 https://queue.fal.run/{model_id}/requests/{request_id}/status
     if (cfg.provider === 'fal') {
