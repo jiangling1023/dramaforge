@@ -208,6 +208,11 @@ onMounted(boot);
         </div>
         <div v-if="!logs.length" class="line">等待操作…</div>
       </footer>
+
+      <!-- 赞助标识：按小鸡云免费服务器条款要求，站点底部展示并链回官网 -->
+      <div class="sponsor">
+        <a href="https://www.xiaojiyun.com/" target="_blank" rel="noopener noreferrer">由小鸡云赞助</a>
+      </div>
     </main>
   </div>
 </template>
@@ -286,4 +291,13 @@ onMounted(boot);
 .line.err { color: var(--err); }
 .line.warn { color: var(--accent); }
 .ts { color: rgba(255, 255, 255, .22); margin-right: 10px; }
+
+.sponsor {
+  height: 26px; flex: 0 0 26px; display: flex; align-items: center; justify-content: center;
+  background: #0e1119; border-top: 1px solid var(--line);
+}
+.sponsor a {
+  font-size: 11px; color: var(--txt-3); text-decoration: none; letter-spacing: .02em;
+}
+.sponsor a:hover { color: var(--accent); text-decoration: underline; }
 </style>
