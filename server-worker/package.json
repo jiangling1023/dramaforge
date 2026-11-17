@@ -1,0 +1,17 @@
+{
+  "name": "dramaforge-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DramaForge 后端 · Cloudflare Workers 版",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "hono": "^4.13.19"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
