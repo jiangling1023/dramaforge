@@ -1,0 +1,19 @@
+{
+  "name": "dramaforge-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DramaForge 短剧创作平台 · 后端",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "dev": "node --watch src/index.mjs",
+    "seed": "node src/db/seed.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
+    "express": "^4.21.2"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
