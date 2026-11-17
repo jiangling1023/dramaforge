@@ -1,0 +1,10 @@
+name = "dramaforge-app"
+compatibility_date = "2026-11-17"
+
+pages_build_output_dir = "dist"
+
+# D1 数据库绑定：Functions 里通过 env.DB 访问
+[[d1_databases]]
+binding = "DB"
+database_name = "dramaforge-db"
+database_id = "f34ceddd-a341-46a2-a00f-73f82747a270"

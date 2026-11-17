@@ -1,84 +1,73 @@
 /**
- * 轻量 PostgREST 客户端（零依赖，只用 fetch）
+ * 数据层 —— Cloudflare D1（SQLite，Workers/Pages 内置）
  *
- * 为什么不引 @supabase/supabase-js：
- *   Workers 免费版 CPU 预算只有 10ms/请求，SDK 的初始化与封装开销偏大，
- *   这里只做「把查询翻译成 PostgREST 的 URL」这一件事，够用且更轻。
+ * 为什么用 D1 而不是 Supabase：
+ *   1. Supabase 项目的域名 concrete-bobcat-* 已不存在（1016），凭证无效
+ *   2. D1 就在 Cloudflare 账号里，免费额度 5GB，和 Pages 前端零距离
+ *   3. D1 就是 SQLite —— 原 schema.sql 直接复用，SQL 语义无需绕行
  *
- * filter 语法（默认 eq，特殊比较用 __ 后缀）：
- *   { id: 5 }                    -> id=eq.5
- *   { id__in: [1,2] }            -> id=in.(1,2)
- *   { deleted_at__is: null }     -> deleted_at=is.null
- *   { name__ilike: '%老陈%' }     -> name=ilike.*老陈*
- *   { id__neq / __gte / __lte / __lt / __gt: x }
+ * 对外保持 select / first / insert / insertOne / update / upsert / remove / count
+ * filters 用 col__op 语法：{ id: 5 } / { id__in: [1,2] } / { deleted_at__is: null }
  */
 
 export function createDb(env) {
-  const base = String(env.SUPABASE_URL || '').replace(/\/+$/, '') + '/rest/v1';
-  const key = env.SUPABASE_KEY;
+  const DB = env.DB;
 
-  if (!env.SUPABASE_URL || !key) throw new Error('缺少 SUPABASE_URL / SUPABASE_KEY');
-
-  async function request(path, { method = 'GET', qs = {}, body, prefer } = {}) {
-    const u = new URL(`${base}/${path}`);
-    for (const [k, v] of Object.entries(qs)) {
-      if (v === undefined || v === null) continue;
-      u.searchParams.set(k, String(v));
-    }
-    const headers = { apikey: key, Authorization: `Bearer ${key}` };
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
-    if (prefer) headers.Prefer = prefer;
-
-    const res = await fetch(u.toString(), {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-
-    const text = await res.text();
-    let data = null;
-    if (text) {
-      try { data = JSON.parse(text); } catch { data = { raw: text }; }
-    }
-    if (!res.ok) {
-      const msg = data?.message || data?.error || `HTTP ${res.status}`;
-      const err = new Error(String(msg).slice(0, 500));
-      err.status = res.status;
-      err.body = data;
-      throw err;
-    }
-    return { data, headers: res.headers };
-  }
-
-  /** 把 filter 对象翻译成 PostgREST 查询参数 */
-  function applyFilters(qs, filters) {
+  /** filters -> WHERE 子句 + 参数 */
+  function buildWhere(filters) {
+    const conds = [];
+    const params = [];
     for (const [rawKey, value] of Object.entries(filters || {})) {
       if (value === undefined) continue;
       const [col, op = 'eq'] = rawKey.split('__');
-
-      if (op === 'is') {
-        qs[col] = 'is.' + (value === null ? 'null' : value);
-      } else if (op === 'in') {
-        qs[col] = 'in.(' + (Array.isArray(value) ? value.join(',') : value) + ')';
-      } else if (op === 'ilike') {
-        // PostgREST 用 * 代表 %，这里统一把 % 转成 *
-        qs[col] = 'ilike.' + String(value).replace(/%/g, '*');
-      } else {
-        qs[col] = `${op}.${value}`;
+      switch (op) {
+        case 'eq': conds.push(`${col} = ?`); params.push(value); break;
+        case 'neq': conds.push(`${col} != ?`); params.push(value); break;
+        case 'gt': conds.push(`${col} > ?`); params.push(value); break;
+        case 'gte': conds.push(`${col} >= ?`); params.push(value); break;
+        case 'lt': conds.push(`${col} < ?`); params.push(value); break;
+        case 'lte': conds.push(`${col} <= ?`); params.push(value); break;
+        case 'in': {
+          const arr = Array.isArray(value) ? value : [value];
+          if (!arr.length) { conds.push('1 = 0'); break; }
+          conds.push(`${col} IN (${arr.map(() => '?').join(',')})`);
+          params.push(...arr);
+          break;
+        }
+        case 'is':
+          conds.push(`${col} IS ${value === null ? 'NULL' : 'NOT NULL'}`);
+          break;
+        case 'like': conds.push(`${col} LIKE ?`); params.push(value); break;
+        case 'ilike': conds.push(`LOWER(${col}) LIKE LOWER(?)`); params.push(value); break;
+        default: conds.push(`${col} = ?`); params.push(value); break;
       }
     }
-    return qs;
+    return { where: conds.length ? ' WHERE ' + conds.join(' AND ') : '', params };
+  }
+
+  /** 'updated_at.desc,id.asc' -> ' ORDER BY updated_at DESC, id ASC' */
+  function buildOrder(order) {
+    if (!order) return '';
+    const parts = String(order).split(',').map((p) => {
+      const [col, dir] = p.trim().split('.');
+      return `${col} ${(dir || 'asc').toUpperCase()}`;
+    });
+    return ' ORDER BY ' + parts.join(', ');
+  }
+
+  function buildColumns(columns) {
+    return columns || '*';
   }
 
   return {
     /** 查多行 */
     async select(table, filters = {}, opt = {}) {
-      const qs = applyFilters({ select: opt.columns || '*' }, filters);
-      if (opt.order) qs.order = opt.order;
-      if (opt.limit) qs.limit = opt.limit;
-      if (opt.offset) qs.offset = opt.offset;
-      const out = await request(table, { qs });
-      return out.data || [];
+      const { where, params } = buildWhere(filters);
+      let sql = `SELECT ${buildColumns(opt.columns)} FROM ${table}${where}${buildOrder(opt.order)}`;
+      if (opt.limit) sql += ` LIMIT ${Number(opt.limit)}`;
+      if (opt.offset) sql += ` OFFSET ${Number(opt.offset)}`;
+      const res = await DB.prepare(sql).bind(...params).all();
+      return res.results || [];
     },
 
     /** 查单行，无则 null */
@@ -87,72 +76,77 @@ export function createDb(env) {
       return rows[0] || null;
     },
 
-    /** 插入，返回插入的行数组 */
+    /** 插入（单行或批量），返回插入行 */
     async insert(table, rows) {
-      const payload = Array.isArray(rows) ? rows : [rows];
-      const out = await request(table, {
-        method: 'POST',
-        body: payload,
-        prefer: 'return=representation',
-      });
-      return out.data || [];
+      const arr = Array.isArray(rows) ? rows : [rows];
+      const out = [];
+      for (const row of arr) {
+        const rec = await this.insertOne(table, row);
+        if (rec) out.push(rec);
+      }
+      return out;
     },
 
-    /** 插入并返回单行 */
+    /** 插入单行并返回该行 */
     async insertOne(table, row) {
-      const rows = await this.insert(table, row);
-      return rows[0] || null;
+      const cols = Object.keys(row);
+      const placeholders = cols.map(() => '?').join(',');
+      const values = cols.map((c) => row[c]);
+      const res = await DB.prepare(
+        `INSERT INTO ${table} (${cols.map((c) => `"${c}"`).join(',')}) VALUES (${placeholders})`
+      ).bind(...values).run();
+      return this.first(table, { id: res.meta.last_row_id });
     },
 
-    /** 更新，返回更新后的行 */
+    /** 更新，返回更新后的行（可能多行） */
     async update(table, filters, patch) {
-      const qs = applyFilters({}, filters);
-      const out = await request(table, {
-        method: 'PATCH',
-        qs,
-        body: patch,
-        prefer: 'return=representation',
-      });
-      return out.data || [];
+      const cols = Object.keys(patch);
+      if (!cols.length) return [];
+      const setSql = cols.map((c) => `"${c}" = ?`).join(',');
+      const { where, params } = buildWhere(filters);
+      await DB.prepare(`UPDATE ${table} SET ${setSql}${where}`)
+        .bind(...cols.map((c) => patch[c]), ...params).run();
+      return this.select(table, filters);
     },
 
-    /** upsert（按唯一约束合并） */
+    /** upsert（按 onConflict 列合并），返回受影响行数 */
     async upsert(table, rows, onConflict) {
-      const payload = Array.isArray(rows) ? rows : [rows];
-      const qs = onConflict ? { on_conflict: onConflict } : {};
-      const out = await request(table, {
-        method: 'POST',
-        qs,
-        body: payload,
-        prefer: 'resolution=merge-duplicates,return=representation',
-      });
-      return out.data || [];
+      const arr = Array.isArray(rows) ? rows : [rows];
+      let affected = 0;
+      for (const row of arr) {
+        const cols = Object.keys(row);
+        const placeholders = cols.map(() => '?').join(',');
+        const conflictCols = onConflict
+          ? onConflict.split(',').map((c) => c.trim()).filter(Boolean)
+          : [];
+        const excl = conflictCols.length
+          ? cols.filter((c) => !conflictCols.includes(c)).map((c) => `"${c}" = excluded."${c}"`).join(',')
+          : cols.map((c) => `"${c}" = excluded."${c}"`).join(',');
+        const sql = `INSERT INTO ${table} (${cols.map((c) => `"${c}"`).join(',')}) VALUES (${placeholders})`
+          + (conflictCols.length ? ` ON CONFLICT (${conflictCols.map((c) => `"${c}"`).join(',')}) DO UPDATE SET ${excl}` : '');
+        const res = await DB.prepare(sql).bind(...cols.map((c) => row[c])).run();
+        affected += Number(res.meta.changes || 0);
+      }
+      return affected;
     },
 
-    /** 直接删除 */
+    /** 删除，返回删除的行 */
     async remove(table, filters) {
-      const qs = applyFilters({}, filters);
-      const out = await request(table, { method: 'DELETE', qs, prefer: 'return=representation' });
-      return out.data || [];
+      const before = await this.select(table, filters);
+      const { where, params } = buildWhere(filters);
+      await DB.prepare(`DELETE FROM ${table}${where}`).bind(...params).run();
+      return before;
     },
 
-    /** 计数（只取头部，不拉数据） */
+    /** 计数 */
     async count(table, filters = {}) {
-      const qs = applyFilters({ select: 'id' }, filters);
-      qs.limit = 1;
-      const out = await request(table, {
-        qs,
-        prefer: 'count=exact',
-      });
-      const cr = out.headers.get('content-range') || '';   // 形如 0-0/25
-      const total = cr.split('/').pop();
-      const n = Number(total);
-      return Number.isFinite(n) ? n : 0;
+      const { where, params } = buildWhere(filters);
+      const res = await DB.prepare(`SELECT COUNT(*) AS n FROM ${table}${where}`).bind(...params).first();
+      return Number(res?.n || 0);
     },
   };
 }
 
-/** 统一的行拷贝（保持与原接口的 plain 行为一致） */
 export function plain(row) {
   return row ? { ...row } : row;
 }

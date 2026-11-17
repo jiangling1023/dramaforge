@@ -14,9 +14,14 @@ import { apiRoutes } from './routes/api.js';
 
 let _db = null;
 let _ai = null;
+let _sig = null;
 
 function bind(env) {
-  if (_db) return;
+  // 同一 Worker 实例的 env 稳定，但隔离岛之间会换对象；用绑定引用做签名，
+  // 避免跨请求误用旧 DB。
+  const sig = env.DB;
+  if (_db && sig === _sig) return;
+  _sig = sig;
   _db = createDb(env);
   _ai = createAi(_db);
 }
