@@ -1,0 +1,43 @@
+{
+  "name": "dramaforge-desktop",
+  "version": "0.2.0",
+  "description": "DramaForge 桌面客户端（Electron）",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "concurrently -k \"npm run vite:dev\" \"wait-on http://localhost:5173 && electron .\"",
+    "vite:dev": "cd web && npm run dev",
+    "build": "cd web && NODE_OPTIONS=--disable-wasm-trap-handler npm run build && cd .. && electron-builder",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "com.dramaforge.app",
+    "productName": "DramaForge",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "web/dist/**/*",
+      "web/public/**/*"
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "dependencies": {
+    "electron": "^33.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "electron-builder": "^25.0.0",
+    "wait-on": "^8.0.0"
+  }
+}

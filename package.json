@@ -1,16 +1,17 @@
 {
   "name": "dramaforge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "workspaces": ["web", "server"],
+  "description": "AI 短剧创作工作台",
   "scripts": {
     "dev:web": "cd web && npm run dev",
-    "dev:server": "cd server && node src/index.mjs",
-    "dev": "concurrently \"npm run dev:web\" \"npm run dev:server\"",
-    "build": "cd web && npm install && npm run build",
-    "start": "cd server && node src/index.mjs"
+    "dev:electron": "cd electron && npm run dev",
+    "dev": "concurrently \"npm run dev:web\" \"npm run dev:electron\"",
+    "build": "cd web && NODE_OPTIONS=--disable-wasm-trap-handler npm run build && cd .. && electron-builder",
+    "start": "cd electron && npm start",
+    "postinstall": "cd electron && npm install"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "concurrently": "^9.0.0"
   }
 }
