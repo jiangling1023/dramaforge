@@ -1,90 +1,48 @@
 /**
- * DramaForge 主进程
- * 开发期加载 vite dev server，生产期加载 dist/index.html
+ * DramaForge 主进程启动器
+ * Electron v20 (Node 20) 运行环境
+ * 直接 spawn Electron 二进制并传递 app.js
  */
-import pkg from 'electron';
-const { app, BrowserWindow, ipcMain, dialog, Tray, Menu } = pkg;
-import path from 'path';
-import { fileURLToPath } from 'url';
+const { spawn } = require('child_process');
+const path = require('path');
+const fs = require('fs');
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Electron 二进制路径
+const ELECTRON_BIN = path.join(__dirname, 'node_modules', 'electron', 'dist', 'electron');
+// app.js 路径（真正的 Electron 主进程）
+const APP_JS = path.join(__dirname, 'app.js');
+// web dist 目录
+const WEB_DIST = path.join(__dirname, '..', 'web', 'dist');
 
-let mainWindow = null;
-let tray = null;
-
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1024,
-    minHeight: 768,
-    frame: false,  // 无边框窗口，自定义标题栏
-    backgroundColor: '#F4F1EC',  // 暖纸白
-    titleBarStyle: 'hidden',  // macOS 隐藏原生标题栏
-    trafficLightPosition: { x: 16, y: 16 },  // macOS 红绿灯位置
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
-
-  // 开发期加载 vite dev server
-  if (process.env.NODE_ENV === 'development') {
-    mainWindow.loadURL('http://localhost:5173');
-    mainWindow.webContents.openDevTools();
-  } else {
-    // 生产期加载 dist
-    mainWindow.loadFile(path.join(__dirname, '..', 'web', 'dist', 'index.html'));
-  }
-
-  mainWindow.on('closed', () => { mainWindow = null; });
+// 检查 web dist
+if (!fs.existsSync(path.join(WEB_DIST, 'index.html'))) {
+  console.error('❌ web/dist 不存在，请先构建: cd web && npm run build');
+  process.exit(1);
 }
 
-function createTray() {
-  // 尝试加载图标，找不到则用默认
-  let iconPath = null;
-  try {
-    iconPath = process.env.NODE_ENV === 'development'
-      ? path.join(__dirname, 'assets', 'icon.png')
-      : path.join(process.resourcesPath, 'app.asar.unpacked', 'assets', 'icon.png');
-  } catch {
-    // 图标加载失败不阻塞启动
-  }
-
-  if (iconPath) {
-    tray = new Tray(iconPath);
-    const contextMenu = Menu.buildFromTemplate([
-      { label: '显示主窗口', click: () => mainWindow?.show() },
-      { type: 'separator' },
-      { label: '退出', click: () => app.quit() },
-    ]);
-    tray.setToolTip('DramaForge');
-    tray.setContextMenu(contextMenu);
-    tray.on('click', () => mainWindow?.show());
-  }
+// 检查 Electron 二进制
+if (!fs.existsSync(ELECTRON_BIN)) {
+  console.error('❌ Electron 二进制不存在:', ELECTRON_BIN);
+  process.exit(1);
 }
 
-// 原生文件对话框（供未来导出功能使用）
-ipcMain.handle('dialog:openFile', async (event, options) => {
-  const result = await dialog.showOpenDialog(mainWindow, options);
-  return result;
+console.log('🚀 启动 DramaForge...');
+console.log('   Electron:', ELECTRON_BIN);
+console.log('   页面:', path.join(WEB_DIST, 'index.html'));
+
+// 用 spawn 启动 Electron，传递 app.js 作为入口
+const electronProcess = spawn(ELECTRON_BIN, [APP_JS, '--no-sandbox'], {
+  stdio: 'inherit'
 });
 
-ipcMain.handle('dialog:saveFile', async (event, options) => {
-  const result = await dialog.showSaveDialog(mainWindow, options);
-  return result;
+electronProcess.on('close', (code) => {
+  if (code !== null) {
+    console.log(`Electron 进程退出，代码: ${code}`);
+    process.exit(code || 0);
+  }
 });
 
-app.whenReady().then(() => {
-  createWindow();
-  createTray();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
-});
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+electronProcess.on('error', (err) => {
+  console.error('❌ 启动 Electron 失败:', err.message);
+  process.exit(1);
 });
