@@ -1,47 +1,242 @@
+/* ================================================================
+ * DramaForge v2 · 全局设计令牌与基础样式层（暖纸白「创作片场」）
+ * 视觉真值：deliverables/DramaForge-UI效果图.html（色值不得自创）
+ * 本文件是令牌唯一 owner，组件卡 U-010~U-014 只读复用，勿各自硬编码
+ * ================================================================ */
+
 :root {
-  --bg: #0b0d12;
-  --panel: #131720;
-  --panel-2: #181d28;
-  --line: rgba(255, 255, 255, 0.09);
-  --txt: #e8ecf4;
-  --txt-2: rgba(255, 255, 255, 0.55);
-  --txt-3: rgba(255, 255, 255, 0.32);
-  --accent: #ffb020;
-  --ok: #5fc98a;
-  --err: #ff6b60;
-  --info: #4a9eff;
+  /* ===== 主色板（色值直接取自定稿效果图） ===== */
+  /* 珊瑚红是全站唯一高饱和主色，只给主行动与选中态，避免多色争抢注意力 */
+  --paper: #F4F1EC;      /* 暖纸白画布底 */
+  --paper2: #EFEBE4;     /* 次级底 */
+  --surface: #FFFFFF;    /* 面板/卡片 */
+  --surface2: #FBFAF8;   /* 米白表面 */
+  --line: #E7E1D8;       /* 描边 */
+  --line2: #F1EDE6;      /* 浅级描边 */
+  --ink: #1E2637;        /* 主文 */
+  --ink2: #566073;       /* 次文 */
+  --ink3: #98A1AE;       /* 弱文 */
+  --coral: #E25940;      /* 珊瑚主色 */
+  --coralD: #C8452F;     /* 深态 */
+  --coralS: #FCEEEA;     /* 浅态 */
+  --indigo: #5468D8;     /* 靛蓝辅色 */
+  --indigoS: #EEF0FC;
+  --violet: #8B5CF6;     /* 紫：项目/编剧 */
+  --violetS: #F3EEFE;
+  --teal: #0E9F86;       /* 青：角色/分镜师 */
+  --tealS: #E6F5F1;
+  --green: #3E9B64;      /* 绿：场景/服务正常 */
+  --greenS: #E9F4EC;
+  --amber: #D98B2B;      /* 琥珀：道具/警告/制片 */
+  --amberS: #FBF1E2;
+  --ok: #2E9E6B;
+  --warn: #D9862B;
+  --err: #D9453D;
+
+  /* ===== 渐变（效果图主按钮 / 品牌 / 专家头像） ===== */
+  --grad-primary: linear-gradient(145deg, #EA6A50, #D94B33);
+  --grad-primary-hover: linear-gradient(145deg, #E45F45, #C8432C);
+  --grad-logo: linear-gradient(145deg, #F0785C, #D8452E);
+  --grad-writer: linear-gradient(145deg, #A071E4, #7B43C6);
+  --grad-producer: linear-gradient(145deg, #E2A94F, #C48324);
+  --grad-storyboard: linear-gradient(145deg, #5BB6A0, #2E927E);
+
+  /* ===== 三专家主题色语义别名（与节点语义色同源） ===== */
+  --expert-writer: var(--violet);        /* 编剧·老周 */
+  --expert-writer-s: var(--violetS);
+  --expert-producer: var(--amber);       /* 制片·老元代 */
+  --expert-producer-s: var(--amberS);
+  --expert-storyboard: var(--teal);      /* 分镜师·阿镜 */
+  --expert-storyboard-s: var(--tealS);
+
+  /* ===== 字体 ===== */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Consolas, monospace;
+  --fs-brand: 15px;
+  --fs-title: 16px;
+  --fs-section: 13px;
+  --fs-node: 13px;
+  --fs-body: 12px;
+  --fs-meta: 10.5px;
+  --fs-label: 10px;
+
+  /* ===== 间距（4px 基准栅格，常用 4/6/8/10/12/14/18/20） ===== */
+  --sp-1: 4px;
+  --sp-1h: 6px;
+  --sp-2: 8px;
+  --sp-2h: 10px;
+  --sp-3: 12px;
+  --sp-3h: 14px;
+  --sp-4: 16px;
+  --sp-4h: 18px;
+  --sp-5: 20px;
+
+  /* ===== 圆角（卡片14 / 节点12 / 按钮9 / 标签5 / 胶囊999） ===== */
+  --r: 14px;
+  --rs: 9px;
+  --r-node: 12px;
+  --r-tag: 5px;
+  --r-pill: 999px;
+
+  /* ===== 阴影 / 选中环 / 过渡 ===== */
+  --s1: 0 1px 2px rgba(30, 38, 55, .05), 0 4px 12px rgba(30, 38, 55, .05);
+  --s2: 0 2px 6px rgba(30, 38, 55, .06), 0 14px 34px rgba(30, 38, 55, .10);
+  --s3: 0 24px 60px rgba(30, 38, 55, .16);
+  --ring: 0 0 0 3px rgba(226, 89, 64, .15);
+  --t: 160ms ease;
+
+  /* ===== 旧变量兼容别名 =====
+   * 现状组件（App/Canvas/ChatPanel）仍引用旧变量名，统一指向浅色令牌，
+   * 使旧视图在浅底上文字/描边自动反转，避免本次令牌切换造成破版。 */
+  --bg: var(--paper);
+  --panel: var(--surface);
+  --panel-2: var(--surface2);
+  --txt: var(--ink);
+  --txt-2: var(--ink2);
+  --txt-3: var(--ink3);
+  --accent: var(--coral);
+  --info: var(--indigo);
 }
 
+/* ===== 全局基础样式 ===== */
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; }
 body {
-  background: var(--bg);
-  color: var(--txt);
-  font-family: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  font-size: 14px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
+.mono { font-family: var(--font-mono); }
+
 button {
-  font-family: inherit;
+  font: inherit;
+  color: inherit;
   cursor: pointer;
   border: none;
-  border-radius: 8px;
-  transition: background .15s, opacity .15s;
+  background: none;
+  border-radius: var(--rs);
+  transition: background var(--t), opacity var(--t);
 }
 button:disabled { opacity: .45; cursor: not-allowed; }
 input, textarea, select {
-  font-family: inherit;
+  font: inherit;
   font-size: 13px;
-  color: var(--txt);
-  background: rgba(255, 255, 255, .05);
+  color: var(--ink);
+  background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--rs);
   padding: 9px 12px;
   outline: none;
   width: 100%;
 }
-input:focus, textarea:focus, select:focus { border-color: rgba(255, 176, 32, .5); }
+/* 焦点用靛蓝而非珊瑚：珊瑚留给主行动，避免全局焦点与选中态混淆 */
+input:focus, textarea:focus, select:focus {
+  border-color: var(--indigo);
+  box-shadow: 0 0 0 3px rgba(84, 104, 216, .14);
+}
 textarea { resize: vertical; line-height: 1.6; }
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .14); border-radius: 4px; }
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-thumb { background: #D8D2C8; border-radius: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ===== 基础类：视图切换 radio ===== */
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--paper2);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+}
+.seg label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--rs);
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--ink2);
+  cursor: pointer;
+  transition: all var(--t);
+  white-space: nowrap;
+}
+.seg label:hover { color: var(--ink); background: rgba(255, 255, 255, .6); }
+/* 兼容两种用法：Vue 侧 .on 类 或 原生 input:checked 兄弟选择器 */
+.seg label.on, .seg input:checked + label {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: var(--s1);
+}
+
+/* ===== 基础类：线性图标 ===== */
+.ic {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ===== 基础类：按钮 ===== */
+.btn {
+  height: 32px;
+  border-radius: var(--rs);
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  transition: all var(--t);
+}
+.btn .ic { width: 14px; height: 14px; }
+.btn.fill { background: var(--coral); color: #fff; box-shadow: 0 4px 10px rgba(226, 89, 64, .22); }
+.btn.fill:hover { background: var(--coralD); transform: translateY(-1px); }
+.btn.primary { background: var(--grad-primary); color: #fff; box-shadow: 0 4px 12px rgba(226, 89, 64, .26); }
+.btn.primary:hover { background: var(--grad-primary-hover); transform: translateY(-1px); }
+.btn.out { border: 1px solid var(--line); background: var(--surface); color: var(--ink2); }
+.btn.out:hover { border-color: #F0C7BB; color: var(--coralD); background: var(--coralS); }
+
+/* ===== 基础类：卡片 ===== */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--s1);
+  transition: transform var(--t), box-shadow var(--t), border-color var(--t);
+}
+.card:hover { transform: translateY(-2px); box-shadow: var(--s2); }
+.card.sel { border-color: var(--coral); box-shadow: var(--ring), var(--s2); }
+
+/* ===== 基础类：助手气泡 ===== */
+.msg { display: flex; flex-direction: column; max-width: 94%; }
+.msg.user { align-self: flex-end; align-items: flex-end; }
+.bub {
+  padding: 9px 11px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  color: var(--ink2);
+}
+.user .bub { background: var(--coral); color: #fff; border-bottom-right-radius: 3px; }
+.system .bub { background: var(--paper2); border: 1px solid var(--line2); border-bottom-left-radius: 3px; }
+.assistant .bub { background: var(--indigoS); color: #3C4A8F; border-bottom-left-radius: 3px; }
+
+/* ===== 基础类：三专家色标（发言气泡/头像/状态点复用） ===== */
+.expert-writer { color: var(--expert-writer); }
+.expert-producer { color: var(--expert-producer); }
+.expert-storyboard { color: var(--expert-storyboard); }
+.expert-writer.bub, .msg.exp-w .bub { background: var(--expert-writer-s); color: #5B3A8C; }
+.expert-producer.bub, .msg.exp-p .bub { background: var(--expert-producer-s); color: #8A5E1C; }
+.expert-storyboard.bub, .msg.exp-s .bub { background: var(--expert-storyboard-s); color: #1C6E5C; }

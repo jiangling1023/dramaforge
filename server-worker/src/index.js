@@ -36,6 +36,7 @@ const dbLazy = {
   upsert: (...a) => _db.upsert(...a),
   remove: (...a) => _db.remove(...a),
   count: (...a) => _db.count(...a),
+  raw: (...a) => _db.raw(...a),
 };
 
 const aiLazy = {

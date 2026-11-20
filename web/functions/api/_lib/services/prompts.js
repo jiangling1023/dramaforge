@@ -142,6 +142,9 @@ export function propImagePrompt(p) {
 描述：${p.description || ''}。
 要求：产品摄影视角，白底，柔和阴影，细节清晰。`;
 }
+export function storyboardImagePrompt(sb) {
+  return `请为分镜「${sb.title || 'S' + sb.storyboard_number}」写首帧图提示词。画面内容：${sb.result || ''}。氛围：${sb.atmosphere || ''}。景别/角度/运镜：${sb.shot_type || ''}/${sb.angle || ''}/${sb.movement || ''}。要求：视频首帧的空镜画面，不出现人物，写实摄影质感。`;
+}
 
 /* ================= 视频提示词 ================= */
 

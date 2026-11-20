@@ -1,55 +1,129 @@
 <script setup>
 /**
- * 无限画布
- * - 滚轮以指针为锚点缩放，空格或中键拖拽平移
- * - 节点可拖动，位置保存到 canvas_layout
- * - 分镜 → 角色/道具 的连线直接来自桥表，不新增关系
+ * 无限画布（F-003 按集连线 + F-004 按集分组）
+ * - 滚轮以指针为锚点缩放，空格/中键拖拽平移；节点可拖动，位置保存到 canvas_layout
+ * - 连线数据源是 canvas-data 的桥表聚合：桥表空则不连，绝不回退全项目角色（E-09）
+ * - firstFrameImage 双源：画布缩略图取 canvas-data 聚合；Inspector 大图取 listStoryboards 全字段
+ * - GET /canvas 响应已 breaking 为 {nodes, groups}（R7）
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { api } from '../api/index.js';
+import EpisodeGroup from '../components/EpisodeGroup.vue';
+import InspectorPanel from '../components/InspectorPanel.vue';
+import LinkPath from '../components/LinkPath.vue';
+import NodeThumb from '../components/NodeThumb.vue';
+import ZoomToolbar from '../components/ZoomToolbar.vue';
 
-const props = defineProps({ dramaId: { type: Number, required: true } });
+const props = defineProps({
+  dramaId: { type: Number, required: true },
+  currentEpisodeId: { type: Number, default: null }, // 切集只切 focus，不 reload（E-08）
+});
+const emit = defineEmits(['episode-focus', 'select-node']);
 
-const view = reactive({ x: 0, y: 0, zoom: 1 });
+const view = reactive({ x: 24, y: 24, zoom: 1 });
 const nodes = ref([]);
-const links = ref([]);
+const groups = ref([]);       // { episode_id, x, y, w, h, collapsed }
+const links = ref([]);        // { from, to, episodeId }
+const canvasData = ref(null); // API-C03 聚合数据
 const loading = ref(true);
 const error = ref('');
 const selected = ref(null);
 const canvasEl = ref(null);
 const tsaving = ref('');
+const focusedEpisodeId = ref(null);
+const mergedBadge = ref(false);
 
+// 浅底可见的语义色（令牌色值），用于六类节点与连线
 const TYPE_META = {
-  drama: { label: '项目', color: '#8b7ce8' },
-  episode: { label: '剧集', color: '#4a9eff' },
-  character: { label: '角色', color: '#36d6c8' },
-  scene: { label: '场景', color: '#5fc98a' },
-  prop: { label: '道具', color: '#ffab3d' },
-  storyboard: { label: '分镜', color: '#e86a9e' },
+  drama: { label: '项目', color: '#8B5CF6' },
+  episode: { label: '剧集', color: '#5468D8' },
+  character: { label: '角色', color: '#0E9F86' },
+  scene: { label: '场景', color: '#3E9B64' },
+  prop: { label: '道具', color: '#D98B2B' },
+  storyboard: { label: '分镜', color: '#E25940' },
 };
+const LEGEND = Object.entries(TYPE_META).map(([t, m]) => ({ t, ...m }));
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-/* ---------------- 布局：首次进入自动排布 ---------------- */
-function autoLayout(drama) {
+/* ---------------- 布局：首次进入自动排布（按集分组） ---------------- */
+function autoLayout(drama, data) {
   const out = [];
-  const push = (type, id, x, y, w = 260, h = 150, extra = {}) =>
-    out.push({ node_type: type, node_id: id, x, y, w, h, z_index: out.length, collapsed: 0, ...extra });
+  const push = (type, id, x, y, w, h, extra = {}) =>
+    out.push({ node_type: type, node_id: id, key: `${type}:${id}`, x, y, w, h,
+      z_index: out.length, collapsed: 0, ...extra });
 
-  push('drama', drama.id, 0, 0, 300, 170);
+  const episodes = data?.episodes || drama.episodes || [];
+  const shared = data?.sharedAssets || {};
+  groups.value = []; // reload 时避免旧分组累积
 
-  const eps = drama.episodes || [];
-  eps.forEach((e, i) => push('episode', e.id, 400, i * 200, 280, 150));
+  push('drama', drama.id, 24, 24, 240, 92);
 
-  const chars = drama.characters || [];
-  chars.forEach((c, i) => push('character', c.id, 820, i * 180, 260, 150));
+  const colW = 860;
+  let gy = 148;
+  for (const ep of episodes) {
+    const sbs = ep.storyboards || [];
+    const rows = Math.max(1, Math.ceil(sbs.length / 2));
+    const gh = 116 + rows * 150;
+    groups.value.push({ episode_id: ep.id, x: 24, y: gy, w: colW, h: gh, collapsed: 0 });
+    push('episode', ep.id, 40, gy + 58, 196, 82, { episode_id: ep.id });
+    sbs.forEach((s, i) => {
+      const col = i % 2, row = Math.floor(i / 2);
+      push('storyboard', s.id,
+        252 + col * 296, gy + 58 + row * 150, 280, 136,
+        { episode_id: ep.id, _thumb: s.firstFrameImage || '' });
+    });
+    gy += gh + 26;
+  }
 
-  const scenes = drama.scenes || [];
-  scenes.forEach((s, i) => push('scene', s.id, 820 + 300, i * 180, 260, 150));
+  const ax = 24 + colW + 44;
+  const assetY = (arr, dx) => {
+    let ay = 148;
+    (arr || []).forEach((a) => { push(dx === 0 ? 'character' : (dx === 230 ? 'scene' : 'prop'),
+      a.id, ax + dx, ay, 214, 84); ay += 98; });
+  };
+  assetY(shared.characters || drama.characters || [], 0);
+  assetY(shared.scenes || drama.scenes || [], 230);
+  assetY(shared.props || drama.props || [], 460);
+  return out;
+}
 
-  const pps = drama.props || [];
-  pps.forEach((p, i) => push('prop', p.id, 820 + 600, i * 180, 240, 140));
+/* ---------------- 节点业务数据回填（非分镜节点用 getDrama 全字段） ---------------- */
+function fillNodeData(drama) {
+  const byKey = new Map();
+  (drama.episodes || []).forEach((e) => byKey.set(`episode:${e.id}`, e));
+  (drama.characters || []).forEach((c) => byKey.set(`character:${c.id}`, c));
+  (drama.scenes || []).forEach((s) => byKey.set(`scene:${s.id}`, s));
+  (drama.props || []).forEach((p) => byKey.set(`prop:${p.id}`, p));
+  byKey.set(`drama:${drama.id}`, drama);
+  nodes.value = nodes.value.map((n) => ({ ...n, _data: n._data || byKey.get(n.key) || null }));
+}
 
+function aggregateSb(s) {
+  return {
+    title: s.title, storyboard_number: s.storyboardNumber, duration_sec: s.durationSec,
+    first_frame_image: s.firstFrameImage, status: s.status,
+    character_ids: s.characterIds || [], prop_ids: s.propIds || [],
+  };
+}
+
+/* ---------------- 连线：桥表驱动（E-09 桥表空不连、不回退全项目角色） ---------------- */
+function buildLinks(data) {
+  const out = [];
+  const dramaKey = `drama:${data.drama?.id}`;
+  for (const e of data.episodes || []) {
+    const epKey = `episode:${e.id}`;
+    out.push({ from: dramaKey, to: epKey, episodeId: e.id });
+    (e.characterIds || []).forEach((id) => out.push({ from: epKey, to: `character:${id}`, episodeId: e.id }));
+    (e.sceneIds || []).forEach((id) => out.push({ from: epKey, to: `scene:${id}`, episodeId: e.id }));
+    (e.propIds || []).forEach((id) => out.push({ from: epKey, to: `prop:${id}`, episodeId: e.id }));
+    for (const s of e.storyboards || []) {
+      const sbKey = `storyboard:${s.id}`;
+      out.push({ from: epKey, to: sbKey, episodeId: e.id });
+      (s.characterIds || []).forEach((id) => out.push({ from: sbKey, to: `character:${id}`, episodeId: e.id }));
+      (s.propIds || []).forEach((id) => out.push({ from: sbKey, to: `prop:${id}`, episodeId: e.id }));
+    }
+  }
   return out;
 }
 
@@ -57,65 +131,85 @@ function autoLayout(drama) {
 async function load() {
   loading.value = true;
   error.value = '';
+  stopPolling();
   try {
-    const drama = await api.getDrama(props.dramaId);
-    const saved = await api.getCanvas(props.dramaId);
-    const savedMap = new Map(saved.map((s) => [`${s.node_type}:${s.node_id}`, s]));
+    // getDrama/listStoryboards 保留现状（资产全字段 / Inspector 详情）；canvas-data 一次取齐分组与桥表
+    const [drama, saved, data] = await Promise.all([
+      api.getDrama(props.dramaId),
+      api.getCanvas(props.dramaId),
+      api.getCanvasData(props.dramaId),
+    ]);
+    canvasData.value = data;
 
-    const base = autoLayout(drama);
-    const merged = base.map((b) => {
-      const s = savedMap.get(`${b.node_type}:${b.node_id}`);
-      return s ? { ...b, x: s.x, y: s.y, w: s.w, h: s.h, collapsed: s.collapsed } : b;
+    // R7 breaking：GET /canvas 由数组改为 {nodes, groups}；兼容读数组仅为容错，不作为契约
+    const savedNodes = Array.isArray(saved) ? saved : (Array.isArray(saved?.nodes) ? saved.nodes : []);
+    const savedGroups = Array.isArray(saved) ? [] : (Array.isArray(saved?.groups) ? saved.groups : []);
+    const nodeMap = new Map(savedNodes.map((s) => [`${s.node_type}:${s.node_id}`, s]));
+    const groupMap = new Map(savedGroups.map((g) => [g.episode_id, g]));
+
+    const laid = autoLayout(drama, data);
+    const merged = laid.map((b) => {
+      const s = nodeMap.get(b.key);
+      return s ? { ...b, x: s.x, y: s.y, w: s.w, h: s.h,
+        z_index: s.z_index ?? b.z_index, collapsed: s.collapsed } : b;
+    });
+    groups.value = groups.value.map((g) => {
+      const s = groupMap.get(g.episode_id);
+      return s ? { ...g, x: s.x, y: s.y, w: s.w, h: s.h, collapsed: s.collapsed } : g;
     });
 
-    // 分镜节点：每个有分镜的集展开一层
-    let row = 0;
-    for (const e of drama.episodes || []) {
-      const sbs = await api.listStoryboards(e.id);
-      sbs.forEach((s, i) => {
-        const key = `storyboard:${s.id}`;
-        const s0 = savedMap.get(key);
-        const node = {
-          node_type: 'storyboard', node_id: s.id,
-          x: s0 ? s0.x : 400 + 340,
-          y: s0 ? s0.y : row * 190 + i * 190,
-          w: 300, h: 160, z_index: 100 + merged.length + i, collapsed: 0,
-          _data: s, _episodeId: e.id,
-        };
-        merged.push(node);
-        // 连线：分镜 → 角色 / 道具
-        for (const cid of s.character_ids || []) {
-          links.value.push({ from: key, to: `character:${cid}` });
-        }
-        for (const pid of s.prop_ids || []) {
-          links.value.push({ from: key, to: `prop:${pid}` });
-        }
-        if (s.scene_id) links.value.push({ from: key, to: `scene:${s.scene_id}` });
-      });
-      row += sbs.length;
-    }
+    // 分镜全字段：Inspector 大图/机位/摘要 + 出图写回（listStoryboards 全字段）
+    const details = await Promise.all((data.episodes || []).map(async (e) => {
+      try { return await api.listStoryboards(e.id); } catch { return []; }
+    }));
+    const detailMap = new Map();
+    details.forEach((list) => list.forEach((s) => detailMap.set(`storyboard:${s.id}`, s)));
+    const aggMap = new Map();
+    (data.episodes || []).forEach((e) => (e.storyboards || []).forEach((s) => aggMap.set(`storyboard:${s.id}`, s)));
+    merged.forEach((n) => {
+      if (n.node_type !== 'storyboard') return;
+      n._data = detailMap.get(n.key) || aggregateSb(aggMap.get(n.key) || {});
+    });
 
-    // 剧集 → 角色/场景/道具 的归属连线
-    for (const e of drama.episodes || []) {
-      const full = drama.characters || [];
-      for (const c of full) links.value.push({ from: `episode:${e.id}`, to: `character:${c.id}` });
-    }
+    nodes.value = merged;
+    fillNodeData(drama);
+    links.value = buildLinks(data);
 
-    nodes.value = merged.map((n) => ({ ...n, key: `${n.node_type}:${n.node_id}` }));
-    // 首次进入把画布居中到项目节点
-    if (!saved.length) {
-      const rect = canvasEl.value?.getBoundingClientRect();
-      if (rect) {
-        view.x = rect.width / 2 - 150;
-        view.y = rect.height / 2 - 85;
-      }
+    if (!focusedEpisodeId.value || !(data.episodes || []).some((e) => e.id === focusedEpisodeId.value)) {
+      focusedEpisodeId.value = props.currentEpisodeId ?? data.episodes?.[0]?.id ?? null;
     }
+    if (!savedNodes.length) { view.x = 24; view.y = 24; view.zoom = 1; }
   } catch (e) {
     error.value = e.message;
   } finally {
     loading.value = false;
   }
 }
+
+/* ---------------- 分组视图 / 折叠 / focus ---------------- */
+const episodeAgg = computed(() => new Map((canvasData.value?.episodes || []).map((e) => [e.id, e])));
+const groupView = computed(() => groups.value.map((g) => {
+  const ep = episodeAgg.value.get(g.episode_id) || {};
+  return { ...g, index: ep.episodeNumber ?? 0, episode: ep, shots: ep.storyboards || [] };
+}));
+const collapsedSet = computed(() => new Set(groups.value.filter((g) => g.collapsed).map((g) => g.episode_id)));
+const focusedNo = computed(() => episodeAgg.value.get(focusedEpisodeId.value)?.episodeNumber ?? null);
+
+function focusEpisode(id) {
+  if (focusedEpisodeId.value === id) return;
+  focusedEpisodeId.value = id;          // 只切 focus：不 reload、不 resetView、不清 selected（E-08）
+  emit('episode-focus', id);
+}
+function toggleGroup(id) {
+  const g = groups.value.find((x) => x.episode_id === id);
+  if (!g) return;
+  g.collapsed = g.collapsed ? 0 : 1;
+  scheduleSave();
+}
+function isDim(n) {
+  return n.episode_id != null && focusedEpisodeId.value != null && n.episode_id !== focusedEpisodeId.value;
+}
+watch(() => props.currentEpisodeId, (id) => { if (id != null) focusEpisode(id); });
 
 /* ---------------- 缩放 ---------------- */
 function onWheel(e) {
@@ -125,7 +219,6 @@ function onWheel(e) {
   const py = e.clientY - rect.top;
   const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
   const nz = clamp(view.zoom * factor, 0.15, 3);
-  // 以指针为锚点：缩放前后指针指向的世界坐标不变
   const wx = (px - view.x) / view.zoom;
   const wy = (py - view.y) / view.zoom;
   view.zoom = nz;
@@ -135,21 +228,19 @@ function onWheel(e) {
 
 /* ---------------- 平移与拖拽 ---------------- */
 let drag = null;
-
 function onPointerDown(e) {
   if (e.button === 1 || e.target.dataset.bg === '1') {
     drag = { mode: 'pan', sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y };
     e.currentTarget.setPointerCapture(e.pointerId);
   }
 }
-
 function onNodeDown(e, node) {
   e.stopPropagation();
   selected.value = node;
+  emit('select-node', node);
   drag = { mode: 'node', node, sx: e.clientX, sy: e.clientY, ox: node.x, oy: node.y };
   e.currentTarget.setPointerCapture(e.pointerId);
 }
-
 function onPointerMove(e) {
   if (!drag) return;
   const dx = e.clientX - drag.sx;
@@ -162,22 +253,25 @@ function onPointerMove(e) {
     drag.node.y = drag.oy + dy / view.zoom;
   }
 }
-
 async function onPointerUp() {
   if (drag?.mode === 'node') await persist();
   drag = null;
 }
 
-/* ---------------- 保存位置 ---------------- */
+/* ---------------- 保存位置 + 分组（API-C02 {nodes[含episode_id], groups}） ---------------- */
 let saveTimer = null;
 async function persist() {
   tsaving.value = '保存中';
   try {
-    await api.saveCanvas(props.dramaId, nodes.value.map((n) => ({
-      node_type: n.node_type, node_id: n.node_id,
-      x: n.x, y: n.y, w: n.w, h: n.h,
-      z_index: n.z_index, collapsed: n.collapsed,
-    })));
+    await api.saveCanvas(props.dramaId, {
+      nodes: nodes.value.map((n) => ({
+        node_type: n.node_type, node_id: n.node_id, episode_id: n.episode_id ?? null,
+        x: n.x, y: n.y, w: n.w, h: n.h, z_index: n.z_index, collapsed: n.collapsed,
+      })),
+      groups: groups.value.map((g) => ({
+        episode_id: g.episode_id, x: g.x, y: g.y, w: g.w, h: g.h, collapsed: g.collapsed,
+      })),
+    });
     tsaving.value = '已保存';
     setTimeout(() => { if (tsaving.value === '已保存') tsaving.value = ''; }, 1500);
   } catch (e) {
@@ -202,14 +296,14 @@ const linkPaths = computed(() => {
     const a = m.get(l.from);
     const b = m.get(l.to);
     if (!a || !b) continue;
-    const x1 = a.x + a.w;
-    const y1 = a.y + a.h / 2;
-    const x2 = b.x;
-    const y2 = b.y + b.h / 2;
-    const mx = (x1 + x2) / 2;
+    if (collapsedSet.value.has(a.episode_id) || collapsedSet.value.has(b.episode_id)) continue;
+    const emphasis = focusedEpisodeId.value == null || l.episodeId === focusedEpisodeId.value;
     out.push({
-      d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`,
-      color: TYPE_META[a.node_type]?.color || '#555',
+      from: { x: a.x + a.w, y: a.y + a.h / 2 },
+      to: { x: b.x, y: b.y + b.h / 2 },
+      color: TYPE_META[a.node_type]?.color || '#98A1AE',
+      opacity: emphasis ? 0.85 : 0.2,
+      emphasis,
     });
   }
   return out;
@@ -229,8 +323,8 @@ function zoomBy(f) {
 }
 function resetView() {
   view.zoom = 1;
-  view.x = 60;
-  view.y = 60;
+  view.x = 24;
+  view.y = 24;
 }
 
 /* ---------------- 节点内容 ---------------- */
@@ -238,7 +332,7 @@ function titleOf(n) {
   const d = n._data;
   switch (n.node_type) {
     case 'drama': return d?.title;
-    case 'episode': return `第 ${d?.episode_number} 集`;
+    case 'episode': return `第 ${d?.episode_number ?? episodeAgg.value.get(n.node_id)?.episodeNumber ?? '?'} 集`;
     case 'character': return d?.name;
     case 'scene': return d?.location;
     case 'prop': return d?.name;
@@ -259,25 +353,9 @@ function subOf(n) {
   }
 }
 
-/* 项目节点需要基础数据 */
-const dramaData = ref(null);
-
 watch(() => props.dramaId, load, { immediate: false });
-
 onMounted(async () => {
   await load();
-  try { dramaData.value = await api.getDrama(props.dramaId); } catch { /* 忽略 */ }
-  // 把业务数据塞进节点，供渲染使用
-  const d = dramaData.value;
-  if (d) {
-    const byKey = new Map();
-    (d.episodes || []).forEach((e) => byKey.set(`episode:${e.id}`, e));
-    (d.characters || []).forEach((c) => byKey.set(`character:${c.id}`, c));
-    (d.scenes || []).forEach((s) => byKey.set(`scene:${s.id}`, s));
-    (d.props || []).forEach((p) => byKey.set(`prop:${p.id}`, p));
-    byKey.set(`drama:${d.id}`, d);
-    nodes.value = nodes.value.map((n) => ({ ...n, _data: n._data || byKey.get(n.key) }));
-  }
   window.addEventListener('keydown', onKey);
 });
 onBeforeUnmount(() => {
@@ -288,11 +366,126 @@ function onKey(e) {
   if (e.key === '0' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); resetView(); }
 }
 
+/* ---------------- 合成标识（AC-006-6，数据来自 mergeByEpisode 最新状态） ---------------- */
+watch(selected, async (n) => {
+  mergedBadge.value = false;
+  if (!n || n.node_type !== 'storyboard' || n.episode_id == null) return;
+  try {
+    const m = await api.mergeByEpisode(n.episode_id);
+    if (selected.value?.key === n.key) mergedBadge.value = m?.status === 'completed';
+  } catch { /* 合成服务未就绪不阻断画布 */ }
+});
+
+/* ---------------- 出图 / 出视频 ---------------- */
+const GENERATABLE = ['storyboard', 'character', 'scene', 'prop'];
+const actionBusy = ref('');
+const actionMsg = ref('');
+let pollTimer = null;
+
+function isGeneratable(n) { return GENERATABLE.includes(n.node_type); }
+function imageOf(n) { return n._thumb || n._data?.first_frame_image || n._data?.composed_image || ''; }
+function videoOf(n) { return n.node_type === 'storyboard' ? (n._data?.video_url || '') : ''; }
+
+function patchNode(node, patch) {
+  const target = nodes.value.find((x) => x.key === node.key) || node;
+  target._data = { ...(target._data || {}), ...patch };
+  // 画布缩略图来自 canvas-data 聚合，出图后同步刷新两处，保持视觉一致
+  if (patch.first_frame_image) target._thumb = patch.first_frame_image;
+  if (patch.image_url) target._thumb = patch.image_url;
+  selected.value = target;
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+async function genNodeImage() {
+  const node = selected.value;
+  if (!node || !isGeneratable(node)) return;
+  actionBusy.value = '出图';
+  actionMsg.value = '';
+  try {
+    const t = node.node_type;
+    const r = await api.genImage({ targetType: t, targetId: node.node_id });
+    patchNode(node, t === 'storyboard'
+      ? { first_frame_image: r.imageUrl, status: 'imaged' }
+      : { image_url: r.imageUrl });
+    actionMsg.value = '出图完成';
+  } catch (e) {
+    actionMsg.value = '出图失败：' + e.message;
+  } finally {
+    actionBusy.value = '';
+  }
+}
+async function genNodeVideo() {
+  const node = selected.value;
+  if (!node || node.node_type !== 'storyboard') return;
+  actionBusy.value = '生成视频';
+  actionMsg.value = '';
+  stopPolling();
+  try {
+    const r = await api.genVideo({ storyboardId: node.node_id });
+    if (r.videoUrl) {
+      patchNode(node, { video_url: r.videoUrl, status: 'done' });
+      actionMsg.value = '视频已生成';
+      return;
+    }
+    if (r.taskId && !r.videoUrl) {
+      actionMsg.value = '视频生成中…';
+      await pollTask(node, r.taskId);
+    } else {
+      actionMsg.value = '视频任务已提交，请稍后刷新查看';
+    }
+  } catch (e) {
+    actionMsg.value = '生成视频失败：' + e.message;
+  } finally {
+    actionBusy.value = '';
+  }
+}
+function pollTask(node, taskId) {
+  return new Promise((resolve) => {
+    let tries = 0;
+    const finish = () => { stopPolling(); resolve(); };
+    const tick = async () => {
+      if (tries++ >= 100) {
+        actionMsg.value = '视频生成超时（5 分钟），请稍后刷新画布查看';
+        finish(); return;
+      }
+      try {
+        const t = await api.getTask(taskId);
+        if (t.status === 'completed' && t.result_url) {
+          patchNode(node, { video_url: t.result_url, status: 'done' });
+          actionMsg.value = '视频已生成';
+          finish(); return;
+        }
+        if (t.status === 'failed') {
+          patchNode(node, { status: 'failed' });
+          actionMsg.value = '视频生成失败：' + (t.error_msg || '上游任务失败');
+          finish(); return;
+        }
+      } catch { /* 单次轮询失败不终止 */ }
+    };
+    stopPolling();
+    pollTimer = setInterval(tick, 3000);
+    tick();
+  });
+}
+onUnmounted(stopPolling);
+
 defineExpose({ reload: load });
 </script>
 
 <template>
   <div class="canvas-wrap">
+    <div class="bar">
+      <b>创作画布</b>
+      <span class="sep">·</span>
+      <span>1 张画布 / {{ groups.length }} 集分组</span>
+      <span class="sep">·</span>
+      <span>当前查看「第 {{ focusedNo ?? '—' }} 集」</span>
+      <div class="legend">
+        <span v-for="x in LEGEND" :key="x.t" class="lg"><i :style="{ background: x.color }" />{{ x.label }}</span>
+      </div>
+    </div>
+
     <div
       ref="canvasEl"
       class="canvas"
@@ -303,35 +496,41 @@ defineExpose({ reload: load });
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
     >
-      <div
-        class="world"
-        :style="{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }"
-      >
+      <div class="world" :style="{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }">
+        <!-- 集容器层 -->
+        <EpisodeGroup
+          v-for="g in groupView" :key="'g' + g.episode_id"
+          :index="g.index" :episode="g.episode" :shots="g.shots"
+          :focused="focusedEpisodeId === g.episode_id" :collapsed="!!g.collapsed"
+          :x="g.x" :y="g.y" :w="g.w" :h="g.h"
+          @focus="focusEpisode(g.episode_id)"
+          @select="emit('episode-focus', g.episode_id)"
+          @toggle-collapse="toggleGroup(g.episode_id)"
+        />
+
         <!-- 连线层 -->
         <svg class="links" width="1" height="1">
-          <path
-            v-for="(l, i) in linkPaths"
-            :key="i"
-            :d="l.d"
-            :stroke="l.color"
-            stroke-width="1.5"
-            fill="none"
-            opacity="0.35"
-          />
+          <LinkPath v-for="(l, i) in linkPaths" :key="i"
+            :from="l.from" :to="l.to" :color="l.color" :opacity="l.opacity" :emphasis="l.emphasis" />
         </svg>
 
         <!-- 节点层 -->
         <div
-          v-for="n in nodes"
-          :key="n.key"
+          v-for="n in nodes" :key="n.key"
+          v-show="n.episode_id == null || !collapsedSet.has(n.episode_id)"
           class="node"
-          :class="[`t-${n.node_type}`, { sel: selected?.key === n.key }]"
+          :class="[`t-${n.node_type}`, { sel: selected?.key === n.key, dim: isDim(n) }]"
           :style="{ left: n.x + 'px', top: n.y + 'px', width: n.w + 'px', height: n.h + 'px' }"
           @pointerdown="onNodeDown($event, n)"
         >
           <div class="tag">{{ TYPE_META[n.node_type]?.label }}</div>
           <div class="ttl">{{ titleOf(n) }}</div>
           <div class="sub">{{ subOf(n) }}</div>
+          <div class="thumb">
+            <NodeThumb :seed="`${n.node_type}:${n.node_id}`" ratio="3:2" :size="58" :src="imageOf(n)" @pointerdown.stop />
+          </div>
+          <a v-if="videoOf(n)" class="vbadge" :href="videoOf(n)" target="_blank" rel="noopener"
+             @pointerdown.stop @click.stop>▶ 视频</a>
         </div>
       </div>
 
@@ -339,35 +538,38 @@ defineExpose({ reload: load });
       <div v-if="error" class="hint err">{{ error }}</div>
     </div>
 
-    <!-- 工具条 -->
-    <div class="tools">
-      <button @click="zoomBy(1.2)">＋</button>
-      <span class="pct">{{ Math.round(view.zoom * 100) }}%</span>
-      <button @click="zoomBy(1 / 1.2)">－</button>
-      <button class="wide" @click="resetView">复位</button>
-      <span v-if="tsaving" class="save">{{ tsaving }}</span>
-    </div>
+    <ZoomToolbar :zoom="view.zoom" :save-state="tsaving"
+      @zoom-in="zoomBy(1.2)" @zoom-out="zoomBy(1 / 1.2)" @reset="resetView" />
 
-    <!-- 选中信息 -->
-    <div v-if="selected" class="inspector">
-      <div class="row"><b>{{ TYPE_META[selected.node_type]?.label }}</b> {{ titleOf(selected) }}</div>
-      <div class="kv">{{ subOf(selected) || '—' }}</div>
-      <div class="kv mono">{{ selected.key }}</div>
-    </div>
+    <InspectorPanel :node="selected" :status="selected?._data?.status || ''"
+      :busy="actionBusy" :message="actionMsg" :merged-badge="mergedBadge"
+      @image="genNodeImage" @video="genNodeVideo" @close="selected = null" />
   </div>
 </template>
 
 <style scoped>
 .canvas-wrap { position: relative; width: 100%; height: 100%; overflow: hidden; }
+.bar {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 5; height: 44px;
+  display: flex; align-items: center; gap: 6px; padding: 0 16px;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  font-size: 12px; color: var(--ink2);
+}
+.bar b { color: var(--ink); font-size: 13px; }
+.bar .sep { color: var(--ink3); }
+.legend { margin-left: auto; display: flex; gap: 12px; }
+.lg { display: inline-flex; align-items: center; gap: 4px; color: var(--ink3); font-size: 11px; }
+.lg i { width: 8px; height: 8px; border-radius: 2px; }
+
 .canvas {
-  position: absolute; inset: 0;
+  position: absolute; inset: 0; top: 44px;
   background:
-    radial-gradient(circle at 30% 20%, rgba(90, 70, 180, 0.10), transparent 55%),
-    radial-gradient(circle at 75% 70%, rgba(40, 120, 140, 0.08), transparent 50%),
-    #0b0d12;
+    radial-gradient(circle at 28% 18%, rgba(129, 140, 248, .08), transparent 55%),
+    radial-gradient(circle at 76% 72%, rgba(14, 159, 134, .06), transparent 50%),
+    var(--paper);
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+    linear-gradient(rgba(30, 38, 55, .045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30, 38, 55, .045) 1px, transparent 1px);
   background-size: 40px 40px;
   cursor: grab;
   touch-action: none;
@@ -379,69 +581,52 @@ defineExpose({ reload: load });
 .node {
   position: absolute;
   border-radius: 12px;
-  padding: 14px 16px;
-  background: rgba(24, 28, 38, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--s1);
   cursor: pointer;
   user-select: none;
-  transition: border-color .15s, box-shadow .15s;
+  transition: border-color .15s, box-shadow .15s, opacity .15s;
   overflow: hidden;
 }
-.node:hover { border-color: rgba(255, 255, 255, 0.24); }
-.node.sel { border-color: #ffb020; box-shadow: 0 0 0 2px rgba(255, 176, 32, .35), 0 8px 28px rgba(0,0,0,.5); }
+.node:hover { box-shadow: var(--s2); }
+.node.sel { border-color: var(--coral); box-shadow: var(--ring), var(--s2); }
+.node.dim { opacity: .62; }
 .node .tag {
-  display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 99px;
-  margin-bottom: 8px; font-weight: 600;
+  display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px;
+  border-radius: var(--r-pill); margin-bottom: 6px;
 }
-.node .ttl { font-size: 15px; font-weight: 600; color: #eef1f7; margin-bottom: 4px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.node .sub { font-size: 12px; color: rgba(255, 255, 255, 0.45);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node .ttl { font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 3px;
+  max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node .sub { font-size: 11px; color: var(--ink3);
+  max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.t-drama { border-left: 3px solid #8b7ce8; }
-.t-episode { border-left: 3px solid #4a9eff; }
-.t-character { border-left: 3px solid #36d6c8; }
-.t-scene { border-left: 3px solid #5fc98a; }
-.t-prop { border-left: 3px solid #ffab3d; }
-.t-storyboard { border-left: 3px solid #e86a9e; }
-.t-drama .tag { background: rgba(139, 124, 232, .18); color: #a99cf0; }
-.t-episode .tag { background: rgba(74, 158, 255, .18); color: #7ab8ff; }
-.t-character .tag { background: rgba(54, 214, 200, .18); color: #5fe0d4; }
-.t-scene .tag { background: rgba(95, 201, 138, .18); color: #7fd6a2; }
-.t-prop .tag { background: rgba(255, 171, 61, .18); color: #ffbe6a; }
-.t-storyboard .tag { background: rgba(232, 106, 158, .18); color: #ef8fb4; }
+.t-drama { border-left: 3px solid var(--violet); }
+.t-episode { border-left: 3px solid var(--indigo); }
+.t-character { border-left: 3px solid var(--teal); }
+.t-scene { border-left: 3px solid var(--green); }
+.t-prop { border-left: 3px solid var(--amber); }
+.t-storyboard { border-left: 3px solid var(--coral); }
+.t-drama .tag { background: var(--violetS); color: var(--violet); }
+.t-episode .tag { background: var(--indigoS); color: var(--indigo); }
+.t-character .tag { background: var(--tealS); color: var(--teal); }
+.t-scene .tag { background: var(--greenS); color: var(--green); }
+.t-prop .tag { background: var(--amberS); color: var(--amber); }
+.t-storyboard .tag { background: var(--coralS); color: var(--coralD); }
 
 .hint {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  color: rgba(255, 255, 255, .55); font-size: 14px;
-  background: rgba(15, 18, 26, .9); padding: 12px 20px; border-radius: 8px;
+  color: var(--ink2); font-size: 13px;
+  background: var(--surface); border: 1px solid var(--line);
+  padding: 12px 20px; border-radius: 8px; box-shadow: var(--s2);
 }
-.hint.err { color: #ff7b72; }
+.hint.err { color: var(--err); }
 
-.tools {
-  position: absolute; right: 20px; bottom: 20px;
-  display: flex; align-items: center; gap: 8px;
-  background: rgba(20, 24, 33, .94);
-  border: 1px solid rgba(255, 255, 255, .1);
-  border-radius: 10px; padding: 8px 12px;
+.node .thumb { position: absolute; right: 8px; top: 8px; }
+.node .vbadge {
+  position: absolute; right: 8px; bottom: 8px; text-decoration: none;
+  font-size: 10px; color: #fff; background: var(--coral);
+  padding: 2px 8px; border-radius: var(--r-pill);
 }
-.tools button {
-  background: rgba(255, 255, 255, .07); border: none; color: #dfe4ee;
-  width: 30px; height: 30px; border-radius: 7px; cursor: pointer; font-size: 16px;
-}
-.tools button:hover { background: rgba(255, 255, 255, .14); }
-.tools button.wide { width: auto; padding: 0 12px; font-size: 12px; }
-.tools .pct { font-size: 12px; color: rgba(255,255,255,.6); min-width: 42px; text-align: center; }
-.tools .save { font-size: 11px; color: #5fc98a; margin-left: 4px; }
-
-.inspector {
-  position: absolute; left: 20px; bottom: 20px; max-width: 340px;
-  background: rgba(20, 24, 33, .94);
-  border: 1px solid rgba(255, 255, 255, .1);
-  border-radius: 10px; padding: 12px 16px; font-size: 12px; color: rgba(255,255,255,.75);
-}
-.inspector .row { margin-bottom: 6px; color: #eef1f7; }
-.inspector .kv { color: rgba(255,255,255,.5); margin-top: 2px; }
-.inspector .mono { font-family: ui-monospace, monospace; font-size: 11px; }
 </style>

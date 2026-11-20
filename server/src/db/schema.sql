@@ -286,3 +286,71 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value      TEXT,
   updated_at TEXT NOT NULL
 );
+
+-- ===================== v2 迁移（在既有 schema.sql 末尾追加） =====================
+
+-- 1) canvas_layout 按集归组：存量行 episode_id 为 NULL，视为项目级
+ALTER TABLE canvas_layout ADD COLUMN episode_id INTEGER;
+
+-- 2) 集容器坐标表
+CREATE TABLE IF NOT EXISTS canvas_groups (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  drama_id    INTEGER NOT NULL REFERENCES dramas(id) ON DELETE CASCADE,
+  episode_id  INTEGER NOT NULL,
+  x           REAL NOT NULL DEFAULT 0,
+  y           REAL NOT NULL DEFAULT 0,
+  w           REAL NOT NULL DEFAULT 900,
+  h           REAL NOT NULL DEFAULT 620,
+  collapsed   INTEGER DEFAULT 0,
+  updated_at  TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_canvas_group ON canvas_groups(drama_id, episode_id);
+
+-- 3) 流水线任务主表
+CREATE TABLE IF NOT EXISTS pipeline_tasks (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  drama_id            INTEGER NOT NULL REFERENCES dramas(id) ON DELETE CASCADE,
+  script_hash         TEXT NOT NULL,
+  script_chars        INTEGER DEFAULT 0,
+  total_episodes      INTEGER DEFAULT 0,
+  completed_episodes  INTEGER DEFAULT 0,
+  failed_episodes     INTEGER DEFAULT 0,
+  current_episode     INTEGER,
+  current_step        TEXT,
+  percent             INTEGER DEFAULT 0,
+  status              TEXT NOT NULL DEFAULT 'queued'
+                      CHECK (status IN ('queued','running','completed','failed')),
+  aspect              TEXT DEFAULT '9:16',
+  auto_image          INTEGER DEFAULT 0,
+  error_summary       TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  completed_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_drama  ON pipeline_tasks(drama_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pipeline_status ON pipeline_tasks(status, updated_at);
+-- 幂等：同项目 + 同剧本指纹，仅允许一条进行中任务（E-03 的数据库兜底）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pipeline_active
+  ON pipeline_tasks(drama_id, script_hash) WHERE status IN ('queued','running');
+
+-- 4) 流水线步骤明细
+CREATE TABLE IF NOT EXISTS pipeline_steps (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id        INTEGER NOT NULL REFERENCES pipeline_tasks(id) ON DELETE CASCADE,
+  episode_id     INTEGER NOT NULL,
+  episode_number INTEGER NOT NULL,
+  step           TEXT NOT NULL CHECK (step IN ('script','extract','storyboard','image')),
+  status         TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending','running','done','failed','skipped')),
+  result_json    TEXT,
+  error_msg      TEXT,
+  attempts       INTEGER DEFAULT 0,
+  started_at     TEXT,
+  finished_at    TEXT,
+  updated_at     TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pipeline_step ON pipeline_steps(task_id, episode_id, step);
+CREATE INDEX IF NOT EXISTS idx_pipeline_steps_task ON pipeline_steps(task_id, status, id);
+
+-- 5) merges 可选索引（便于按项目取最新合成任务）
+CREATE INDEX IF NOT EXISTS idx_merges_created ON merges(drama_id, created_at DESC);

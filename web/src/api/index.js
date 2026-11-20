@@ -50,7 +50,8 @@ export const api = {
 
   /* 画布 */
   getCanvas: (dramaId) => req('GET', `/dramas/${dramaId}/canvas`),
-  saveCanvas: (dramaId, nodes) => req('PUT', `/dramas/${dramaId}/canvas`, { nodes }),
+  saveCanvas: (dramaId, payload) => req('PUT', `/dramas/${dramaId}/canvas`, payload),
+  getCanvasData: (dramaId) => req('GET', `/dramas/${dramaId}/canvas-data`),
 
   /* 生成 */
   genScript: (b) => req('POST', '/generate/script', b),
@@ -61,6 +62,18 @@ export const api = {
   getTask: (id) => req('GET', `/generate/task/${id}`),
 
   /* 智能助手 */
-  chat: (dramaId, episodeId, message, history) =>
-    req('POST', '/chat', { dramaId, episodeId, message, history }, 120000),
+  // 第 5 参 expertId 为可选；后端 buildSystemPrompt(expertId) 按需注入 persona，不传则模型按内容自决
+  chat: (dramaId, episodeId, message, history, expertId) =>
+    req('POST', '/chat', { dramaId, episodeId, message, history, expertId }, 120000),
+
+  /* 流水线 */
+  pipelineCreate: (b) => req('POST', '/pipeline/create', b),
+  pipelineGet: (id) => req('GET', `/pipeline/${id}`),
+  pipelineAdvance: (id) => req('POST', `/pipeline/${id}/advance`),
+
+  /* 合成 */
+  mergeCreate: (b) => req('POST', '/merge/create', b),
+  mergeGet: (id) => req('GET', `/merge/${id}`),
+  mergeByEpisode: (episodeId) => req('GET', `/merge/episode/${episodeId}`),
+  mergeAdvance: (id, b) => req('POST', `/merge/${id}/advance`, b),
 };

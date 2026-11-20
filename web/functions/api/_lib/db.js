@@ -150,6 +150,15 @@ export function createDb(env) {
       const res = await DB.prepare(`SELECT COUNT(*) AS n FROM ${table}${where}`).bind(...params).first();
       return Number(res?.n || 0);
     },
+
+    /**
+     * 通用 SQL 透传：仅供 CAS 抢占与批量状态更新使用。
+     * 返回受影响行数，调用方据此判断 changes===0（被抢占）。
+     */
+    async raw(sql, params) {
+      const res = await DB.prepare(sql).bind(...(params || [])).run();
+      return Number(res.meta.changes || 0);
+    },
   };
 }
 

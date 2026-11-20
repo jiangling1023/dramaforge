@@ -6,10 +6,12 @@
  */
 import { Hono } from 'hono';
 import { now, plain, plainAll } from '../db.js';
-import { buildTools, execToolCall, ASSISTANT_SYSTEM } from '../services/assistant.js';
+import { buildTools, execToolCall, buildSystemPrompt, expertForTool, EXPERTS } from '../services/assistant.js';
 
 const ok = (c, data) => c.json({ success: true, data });
-const bad = (c, message, code = 400) => c.json({ success: false, error: { message } }, code);
+// §4.1 统一错误响应体：error 对象须含 message + code；第 3 参为 HTTP status、第 4 参为业务码（默认按 status 映射）
+const ERROR_CODES = { 400: 'VALIDATION_ERROR', 404: 'NOT_FOUND', 409: 'CONFLICT', 429: 'RATE_LIMITED', 500: 'INTERNAL_ERROR', 502: 'UPSTREAM_ERROR', 504: 'TASK_TIMEOUT' };
+const bad = (c, message, status = 400, code) => c.json({ success: false, error: { message, code: code || ERROR_CODES[status] || 'INTERNAL_ERROR' } }, status);
 
 const MAX_TOOL_CALLS = 8;
 
@@ -57,8 +59,9 @@ export function chatRoutes(db, ai) {
   const r = new Hono();
 
   r.post('/', async (c) => {
-    const { dramaId, episodeId, message, history = [] } = await c.req.json().catch(() => ({}));
+    const { dramaId, episodeId, message, history = [], expertId } = await c.req.json().catch(() => ({}));
     if (!dramaId || !message) return bad(c, '需要 dramaId 和 message');
+    if (expertId && !EXPERTS[expertId]) return bad(c, 'expertId 只能是 writer / producer / storyboard');
 
     const drama = await db.first('dramas', { id: dramaId, deleted_at__is: null }, { columns: 'id,title,genre' });
     if (!drama) return bad(c, '项目不存在', 404);
@@ -103,13 +106,13 @@ export function chatRoutes(db, ai) {
 
     // 构建初始消息链
     const messages = [
-      { role: 'system', content: ASSISTANT_SYSTEM },
+      { role: 'system', content: buildSystemPrompt(expertId) },
       { role: 'system', content: '【项目上下文】\n' + contextSummary },
       ...history,
       { role: 'user', content: message },
     ];
 
-    const tools = buildTools(db)(dramaIdNum);
+    const tools = buildTools(db)(dramaIdNum, episodeIdNum);
 
     // Agent 循环：最多调用 MAX_TOOL_CALLS 次工具
     const toolCallHistory = [];
@@ -131,7 +134,10 @@ export function chatRoutes(db, ai) {
         for (const tc of toolCalls) {
           try {
             const toolResult = await execToolCall(tc.name, tc.params, tools);
-            toolCallHistory.push({ name: tc.name, params: tc.params, result: toolResult });
+            toolCallHistory.push({
+              name: tc.name, params: tc.params, result: toolResult,
+              expert: expertForTool(tc.name, tc.params),
+            });
             const summary = typeof toolResult === 'string'
               ? toolResult
               : JSON.stringify(toolResult).slice(0, 600);
@@ -154,12 +160,16 @@ export function chatRoutes(db, ai) {
       break;
     }
 
+    // [expert:xxx] 落 meta，前端据此渲染发言人标；文本标记保留，供前端直接解析
+    const expertTag = finalReply.match(/\[expert:\s*(writer|producer|storyboard)\s*\]/i)?.[1]?.toLowerCase() || null;
+    const meta = JSON.stringify({ toolCalls: toolCallHistory, expert: expertTag, requestedExpertId: expertId || null });
+
     // 持久化对话记录
     await db.insert('chat_messages', [
       { session_id: sessionId, role: 'user', content: message, created_at: now() },
       {
         session_id: sessionId, role: 'assistant', content: finalReply,
-        meta: JSON.stringify(toolCallHistory), created_at: now(),
+        meta, created_at: now(),
       },
     ]);
 

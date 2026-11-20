@@ -7,11 +7,52 @@
  */
 
 import { plain, plainAll, parseJson, now } from '../db.js';
+import { create as createPipeline } from './pipeline.js';
 
 const norm = (s) => String(s || '').trim().toLowerCase();
 
+/* ===== 三专家配置（冻结 §5.1，前端 U-014 逐字复用） ===== */
+export const EXPERTS = {
+  writer: {
+    id: 'writer', name: '编剧·老周', role: '剧本改写 / 台词 / 冲突反转',
+    color: '#8B5CF6', tools: ['generate.run(script)', 'storyboard.update(result)'],
+  },
+  producer: {
+    id: 'producer', name: '制片·老元代', role: '资产统筹 / 项目剧集 / 成本',
+    color: '#D98B2B', tools: ['project.*', 'generate.run(extract)'],
+  },
+  storyboard: {
+    id: 'storyboard', name: '分镜师·阿镜', role: '镜头 / 机位 / 出图出视频',
+    color: '#0E9F86', tools: ['storyboard.*', 'canvas.*', 'generate.run(storyboard)'],
+  },
+};
+
+const EXPERT_PERSONAS = {
+  writer: '你是编剧·老周，负责剧本改写/台词/冲突反转，优先用 generate.run(kind=script)、storyboard.update(result)',
+  producer: '你是制片·老元代，负责资产统筹/项目剧集/成本，优先用 project.*、generate.run(kind=extract)',
+  storyboard: '你是分镜师·阿镜，负责镜头/机位/出图出视频，优先用 storyboard.*、canvas.*、generate.run(kind=storyboard)',
+};
+
+/** 单一基座 + persona 注入（不传 expertId 则模型按内容自决） */
+export function buildSystemPrompt(expertId) {
+  const persona = EXPERT_PERSONAS[expertId];
+  return persona ? `${ASSISTANT_SYSTEM}\n\n【当前专家 persona】\n${persona}` : ASSISTANT_SYSTEM;
+}
+
+/** 工具 → 专家映射（generate.run 按 kind、storyboard.update 按 result 字段细分） */
+export function expertForTool(name, params = {}) {
+  if (name === 'generate.run') {
+    return { script: 'writer', extract: 'producer', storyboard: 'storyboard' }[params.kind] || null;
+  }
+  if (name === 'storyboard.update') return params.result !== undefined ? 'writer' : 'storyboard';
+  if (name.startsWith('project.')) return 'producer';
+  if (name.startsWith('canvas.')) return 'storyboard';
+  if (name.startsWith('storyboard.')) return 'storyboard';
+  return null;
+}
+
 export function buildTools(db) {
-  return (dramaId) => ({
+  return (dramaId, episodeId) => ({
     /* -------- 画布操作 -------- */
     'canvas.list_nodes': async () => {
       const rows = await db.select('canvas_layout', { drama_id: dramaId }, { order: 'z_index.asc' });
@@ -137,21 +178,50 @@ export function buildTools(db) {
       return { type: 'storyboard_updated', storyboard_id: Number(storyboard_id) };
     },
 
-    /* -------- 生成触发 -------- */
+    /* -------- 生成触发：真实建流水线任务（TOOL-01） -------- */
     'generate.run': async (params) => {
-      const { kind, episodeIds, storyboardNumbers } = params || {};
+      const { kind, episodeIds } = params || {}; // storyboardNumbers 保留字段，本轮不参与
       const valid = ['script', 'extract', 'storyboard'];
       if (!kind || !valid.includes(kind)) {
         throw new Error(`kind 必须是 ${valid.join(' / ')} 之一`);
       }
-      // 返回目标信息，前端会直接调用真实接口
+
+      const dramaNum = Number(dramaId);
+      let targetIds = Array.isArray(episodeIds) && episodeIds.length
+        ? episodeIds.map(Number)
+        : episodeId ? [Number(episodeId)] : null;
+
+      // 越权防护：指定的集必须全部属于当前 dramaId
+      if (targetIds) {
+        const owned = await db.select('episodes',
+          { id__in: targetIds, drama_id: dramaNum, deleted_at__is: null },
+          { columns: 'id,episode_number', order: 'episode_number.asc' });
+        if (owned.length !== new Set(targetIds).size) throw new Error('指定的集不属于当前项目');
+        targetIds = owned.map((e) => e.id);
+      } else {
+        const all = await db.select('episodes',
+          { drama_id: dramaNum, deleted_at__is: null },
+          { columns: 'id,episode_number', order: 'episode_number.asc' });
+        if (!all.length) throw new Error('当前项目还没有剧集');
+        targetIds = all.map((e) => e.id);
+      }
+
+      const eps = await db.select('episodes',
+        { id__in: targetIds, drama_id: dramaNum, deleted_at__is: null },
+        { order: 'episode_number.asc' });
+      // 拼回带集标记的整部剧本，直接复用 pipeline.create 的切集与 script_hash 幂等
+      const script = eps.map((e) => `第${e.episode_number}集\n${e.script_content || e.content || ''}`).join('\n\n');
+      const res = await createPipeline(db, null, { dramaId: dramaNum, script, steps: [kind] });
+      const taskId = res.data?.taskId ?? res.error?.data?.existingTaskId;
+      if (!taskId) throw new Error(res.error?.message || '创建生成任务失败');
+
       return {
-        type: 'generate_plan',
+        type: 'generate_task',
         kind,
-        dramaId,
-        episodeIds: episodeIds || null,
-        storyboardNumbers: storyboardNumbers || null,
-        hint: `建议调用 POST /api/generate/${kind}，payload: { dramaId:${dramaId}, episodeIds:${JSON.stringify(episodeIds || []) }, scope:{ episodeIds:${JSON.stringify(episodeIds || [])} } }`,
+        dramaId: dramaNum,
+        taskId,
+        status: 'queued',
+        hint: `已创建生成任务 #${taskId}，前端请轮询 /api/pipeline/${taskId} 或继续 advance 直至完成`,
       };
     },
   });
@@ -182,6 +252,10 @@ export const ASSISTANT_SYSTEM = `你是 DramaForge 智能助手，一个短剧�
 - 如果多个步骤，逐个调用工具并汇报
 - 如果不确定，先问用户再执行
 - 不要在没有工具调用的情况下编造数据
+
+【专家团规则段】
+你有三位专家身份。根据用户请求或当前激活专家，以相应身份发言，并在回复文本末尾标注 [expert:writer|producer|storyboard]。
+每次只以一位专家身份主答；确需协作时说明「正在与 X 协作」。
 
 工具调用格式（任选一种，平台自动识别）：
 格式A（推荐）：<tool_use name="project.characters">\n{}\n</tool_use>

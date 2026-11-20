@@ -1,14 +1,48 @@
 /**
  * 基础接口（Workers 版）：配置 / 项目 / 剧集 / 资产 / 分镜 / 画布
- * 生成类在 generate.js，助手在 chat.js
+ * 生成类在 generate.js，助手在 chat.js，流水线/合并在 pipeline.js、merge.js
  */
 import { Hono } from 'hono';
 import { now, plain, plainAll, parseJson } from '../db.js';
 import { generateRoutes } from './generate.js';
 import { chatRoutes } from './chat.js';
+import { pipelineRoutes } from './pipeline.js';
+import { mergeRoutes } from './merge.js';
 
 const ok = (c, data) => c.json({ success: true, data });
-const bad = (c, message, code = 400) => c.json({ success: false, error: { message } }, code);
+
+const ERROR_CODES = {
+  400: 'VALIDATION_ERROR',
+  404: 'NOT_FOUND',
+  409: 'CONFLICT',
+  429: 'RATE_LIMITED',
+  500: 'INTERNAL_ERROR',
+  502: 'UPSTREAM_ERROR',
+  504: 'TASK_TIMEOUT',
+};
+// message 保留向后兼容；第 4 参留给业务码（如 DUPLICATE_TASK），默认按 HTTP 状态映射通用码
+const bad = (c, message, status = 400, code) => c.json(
+  { success: false, error: { message, code: code || ERROR_CODES[status] || 'INTERNAL_ERROR' } },
+  status
+);
+
+async function readCanvas(db, dramaId) {
+  const [nodes, groups] = await Promise.all([
+    db.select('canvas_layout', { drama_id: dramaId }, { order: 'id.asc' }),
+    db.select('canvas_groups', { drama_id: dramaId }, { order: 'id.asc' }),
+  ]);
+  return { nodes: plainAll(nodes), groups: plainAll(groups) };
+}
+
+// 桥表没有记录时调用方得到空数组，不回退项目级资产（E-09）
+function groupIds(links, key, value) {
+  const map = new Map();
+  for (const l of links) {
+    if (!map.has(l[key])) map.set(l[key], []);
+    map.get(l[key]).push(l[value]);
+  }
+  return map;
+}
 
 function maskKey(k) {
   if (!k) return '';
@@ -398,41 +432,115 @@ export function apiRoutes(db, ai) {
   });
 
   /* ================= 画布布局 ================= */
-  r.get('/dramas/:id/canvas', async (c) => {
-    const rows = await db.select('canvas_layout', { drama_id: Number(c.req.param('id')) });
-    return ok(c, plainAll(rows));
-  });
+  r.get('/dramas/:id/canvas', async (c) => ok(c, await readCanvas(db, Number(c.req.param('id')))));
 
   r.put('/dramas/:id/canvas', async (c) => {
     const dramaId = Number(c.req.param('id'));
     const body = await c.req.json().catch(() => ({}));
     const nodes = Array.isArray(body?.nodes) ? body.nodes : [];
+    const groups = Array.isArray(body?.groups) ? body.groups : [];
+    if (nodes.some((n) => !n?.node_type || n.node_id == null)) return bad(c, '节点缺少 node_type 或 node_id');
+    if (groups.some((g) => g?.episode_id == null)) return bad(c, '集容器缺少 episode_id');
     const t = now();
 
     if (nodes.length) {
-      await db.upsert(
-        'canvas_layout',
-        nodes.map((n) => ({
-          drama_id: dramaId,
-          node_type: n.node_type,
-          node_id: n.node_id,
-          x: n.x ?? 0,
-          y: n.y ?? 0,
-          w: n.w ?? 280,
-          h: n.h ?? 180,
-          z_index: n.z_index ?? 0,
-          collapsed: n.collapsed ? 1 : 0,
-          updated_at: t,
-        })),
-        'drama_id,node_type,node_id'
-      );
+      await db.upsert('canvas_layout', nodes.map((n) => ({
+        drama_id: dramaId,
+        node_type: n.node_type,
+        node_id: n.node_id,
+        x: n.x ?? 0,
+        y: n.y ?? 0,
+        w: n.w ?? 280,
+        h: n.h ?? 180,
+        z_index: n.z_index ?? 0,
+        collapsed: n.collapsed ? 1 : 0,
+        episode_id: n.episode_id ?? null,
+        updated_at: t,
+      })), 'drama_id,node_type,node_id');
     }
-    return ok(c, { saved: nodes.length });
+    if (groups.length) {
+      await db.upsert('canvas_groups', groups.map((g) => ({
+        drama_id: dramaId,
+        episode_id: g.episode_id,
+        x: g.x ?? 0,
+        y: g.y ?? 0,
+        w: g.w ?? 900,
+        h: g.h ?? 620,
+        collapsed: g.collapsed ? 1 : 0,
+        updated_at: t,
+      })), 'drama_id,episode_id');
+    }
+    return ok(c, { savedNodes: nodes.length, savedGroups: groups.length });
+  });
+
+  r.get('/dramas/:id/canvas-data', async (c) => {
+    const dramaId = Number(c.req.param('id'));
+    const drama = await db.first('dramas', { id: dramaId, deleted_at__is: null });
+    if (!drama) return bad(c, '项目不存在', 404);
+
+    const episodes = plainAll(await db.select('episodes',
+      { drama_id: dramaId, deleted_at__is: null }, { order: 'episode_number.asc' }));
+    const epIds = episodes.map((e) => e.id);
+    const [storyboards, epChars, epScenes, epProps] = epIds.length
+      ? await Promise.all([
+        db.select('storyboards', { episode_id__in: epIds }, { order: 'storyboard_number.asc' }),
+        db.select('episode_characters', { episode_id__in: epIds }, { columns: 'episode_id,character_id' }),
+        db.select('episode_scenes', { episode_id__in: epIds }, { columns: 'episode_id,scene_id' }),
+        db.select('episode_props', { episode_id__in: epIds }, { columns: 'episode_id,prop_id' }),
+      ])
+      : [[], [], [], []];
+    const sbIds = storyboards.map((s) => s.id);
+    const [sbChars, sbProps] = sbIds.length
+      ? await Promise.all([
+        db.select('storyboard_characters', { storyboard_id__in: sbIds }, { columns: 'storyboard_id,character_id' }),
+        db.select('storyboard_props', { storyboard_id__in: sbIds }, { columns: 'storyboard_id,prop_id' }),
+      ])
+      : [[], []];
+
+    const [characters, scenes, props, canvas] = await Promise.all([
+      db.select('characters', { drama_id: dramaId, deleted_at__is: null }, { columns: 'id,name', order: 'sort_order.asc,id.asc' }),
+      db.select('scenes', { drama_id: dramaId, deleted_at__is: null }, { columns: 'id,location', order: 'id.asc' }),
+      db.select('props', { drama_id: dramaId, deleted_at__is: null }, { columns: 'id,name', order: 'id.asc' }),
+      readCanvas(db, dramaId),
+    ]);
+
+    const epCharIds = groupIds(epChars, 'episode_id', 'character_id');
+    const epSceneIds = groupIds(epScenes, 'episode_id', 'scene_id');
+    const epPropIds = groupIds(epProps, 'episode_id', 'prop_id');
+    const sbCharIds = groupIds(sbChars, 'storyboard_id', 'character_id');
+    const sbPropIds = groupIds(sbProps, 'storyboard_id', 'prop_id');
+
+    return ok(c, {
+      drama: { id: drama.id, title: drama.title, aspectRatio: drama.aspect_ratio },
+      episodes: episodes.map((e) => ({
+        id: e.id,
+        episodeNumber: e.episode_number,
+        title: e.title,
+        durationSec: e.duration_sec,
+        storyboards: storyboards.filter((s) => s.episode_id === e.id).map((s) => ({
+          id: s.id,
+          storyboardNumber: s.storyboard_number,
+          title: s.title,
+          durationSec: s.duration_sec,
+          firstFrameImage: s.first_frame_image,
+          status: s.status,
+          characterIds: sbCharIds.get(s.id) || [],
+          propIds: sbPropIds.get(s.id) || [],
+        })),
+        characterIds: epCharIds.get(e.id) || [],
+        sceneIds: epSceneIds.get(e.id) || [],
+        propIds: epPropIds.get(e.id) || [],
+      })),
+      sharedAssets: { characters: plainAll(characters), scenes: plainAll(scenes), props: plainAll(props) },
+      canvas,
+    });
   });
 
   /* ================= 子路由 ================= */
   r.route('/chat', chatRoutes(db, ai));
   r.route('/generate', generateRoutes(db, ai));
+  r.route('/pipeline', pipelineRoutes(db, ai));
+  r.route('/merge', mergeRoutes(db, ai));
 
   return r;
 }
