@@ -24,17 +24,10 @@ jobs:
     - name: Build web app
       run: cd web && NODE_OPTIONS=--disable-wasm-trap-handler npm run build
 
-    - name: Upload artifact for Cloudflare Pages
-      uses: actions/upload-artifact@v4
-      with:
-        name: pages-dist
-        path: web/dist
-        retention-days: 1
-
     - name: Deploy to Cloudflare Pages
       uses: cloudflare/pages-action@v1
       with:
-        apiToken: ${{ secrets.CF_API_TOKEN }}
+        apiKey: ${{ secrets.CF_API_TOKEN }}
         accountId: 195728e627f02c9a0c5b12633ae74c5b
         projectName: dramaforge-app
         directory: web/dist
