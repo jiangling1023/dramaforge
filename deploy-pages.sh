@@ -12,6 +12,9 @@ WEB_DIR="web"
 DIST_DIR="${WEB_DIR}/dist"
 NODE_BIN="./node_modules/.bin"
 
+# 记录项目根目录
+PROJECT_ROOT="$(pwd)"
+
 echo "=== DramaForge Cloudflare Pages 部署脚本 ==="
 echo ""
 
@@ -43,21 +46,24 @@ else
     echo "   ⚠️  vite 未找到，使用现有 dist"
 fi
 
-# 恢复 _redirects（防止竞态清空）
+# 恢复 _redirects（防止竞态清空），但保留我们添加的 API 路由
 echo "📝 恢复 _redirects 文件..."
 git checkout HEAD -- dist/_redirects 2>/dev/null || true
+# 追加 API 路由（如果不存在）
+if ! grep -q "dramaforge-api" dist/_redirects 2>/dev/null; then
+  echo "/api/*  https://dramaforge-api.jl5436.workers.dev/:splat  200" >> dist/_redirects
+fi
 
 # 检查 dist
-if [ ! -f "${DIST_DIR}/index.html" ]; then
-    echo "❌ 错误: dist/index.html 不存在"
+if [ ! -f "${PROJECT_ROOT}/${DIST_DIR}/index.html" ]; then
+    echo "❌ 错误: ${DIST_DIR}/index.html 不存在"
     exit 1
 fi
 
 # 创建 zip
 echo "📦 创建部署包..."
-cd ..
 rm -f /tmp/pages-deploy.zip
-zip -r /tmp/pages-deploy.zip "${DIST_DIR}" -x "*.DS_Store" 2>&1 | tail -3
+zip -r /tmp/pages-deploy.zip "${PROJECT_ROOT}/${DIST_DIR}" -x "*.DS_Store" 2>&1 | tail -3
 
 ZIP_SIZE=$(stat -f%z /tmp/pages-deploy.zip 2>/dev/null || stat -c%s /tmp/pages-deploy.zip)
 echo "   压缩包大小: ${ZIP_SIZE} bytes"
