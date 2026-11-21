@@ -5,3 +5,7 @@ dist/
 *.log
 .env
 .env.local
+server/data/
+*.tar.gz
+*.tgz
+download/

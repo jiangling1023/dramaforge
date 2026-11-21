@@ -75,18 +75,10 @@ echo.
 echo [信息] 正在安装依赖（首次可能需要 5-10 分钟）...
 echo.
 
-:: 设置国内镜像（可选，注释掉则使用默认源）
-:: npm config set electron_mirror https://npmmirror.com/mirrors/electron/
-:: npm config set registry https://registry.npmmirror.com
-
 call npm install
 if %errorlevel% neq 0 (
     echo.
     echo [错误] 依赖安装失败
-    echo.
-    echo 尝试使用国内镜像后重试：
-    echo   npm config set electron_mirror https://npmmirror.com/mirrors/electron/
-    echo   npm install
     pause
     exit /b 1
 )
@@ -112,7 +104,6 @@ echo   打包成功！
 echo ========================================
 echo.
 
-:: 查找输出的安装包
 if exist electron\release (
     echo [输出目录] electron\release\
     echo.
@@ -123,15 +114,4 @@ if exist electron\release (
 
 echo.
 echo 安装包位置：dramaforge\electron\release\
-echo.
-echo 下一步：
-echo   1. 运行 .exe 安装包进行安装
-echo   2. 或将便携版复制到任意位置使用
-echo.
-
 pause
-goto END
-
-:END
-echo.
-exit /b 0
