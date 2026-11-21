@@ -2,12 +2,14 @@
   "appId": "com.dramaforge.app",
   "productName": "DramaForge",
   "directories": {
-    "output": "release"
+    "output": "release",
+    "buildResources": "build"
   },
   "files": [
-    "electron/**/*",
-    "web/dist/**/*",
-    "web/public/**/*"
+    "electron/main.js",
+    "electron/preload.js",
+    "electron/node_modules/**/*",
+    "web/dist/**/*"
   ],
   "win": {
     "target": [

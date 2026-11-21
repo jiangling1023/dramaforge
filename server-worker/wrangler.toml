@@ -3,6 +3,12 @@ main = "src/index.js"
 compatibility_date = "2026-11-01"
 compatibility_flags = ["nodejs_compat"]
 
+# D1 数据库绑定
+[[d1_databases]]
+binding = "DB"
+database_name = "dramaforge-db"
+database_id = "f34ceddd-a341-46a2-a00f-73f82747a270"
+
 # SUPABASE_URL / SUPABASE_KEY 用 secret 注入，不要写在这里：
 #   npx wrangler secret put SUPABASE_URL
 #   npx wrangler secret put SUPABASE_KEY

@@ -2,7 +2,7 @@
   "name": "dramaforge-desktop",
   "version": "0.2.0",
   "description": "DramaForge 桌面客户端（Electron）",
-  "main": "electron/main.js",
+  "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "concurrently -k \"npm run vite:dev\" \"wait-on http://localhost:5173 && electron .\"",
@@ -34,11 +34,10 @@
       "createStartMenuShortcut": true
     }
   },
-  "dependencies": {
-    "electron": "^33.0.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "concurrently": "^9.0.0",
+    "electron": "^33.0.0",
     "electron-builder": "^25.0.0",
     "wait-on": "^8.0.0"
   }
