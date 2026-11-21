@@ -9,3 +9,5 @@ server/data/
 *.tar.gz
 *.tgz
 download/
+electron/electron
+electron/electron-dist/
