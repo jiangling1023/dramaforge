@@ -28,7 +28,7 @@ jobs:
       uses: cloudflare/pages-action@v1
       with:
         apiKey: ${{ secrets.CF_API_TOKEN }}
-        accountId: ${{ secrets.CF_ACCOUNT_ID }}
+        accountId: 195728e627f02c9a0c5b12633ae74c5b
         projectName: dramaforge-app
         directory: web/dist
         branch: main
