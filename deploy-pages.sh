@@ -60,9 +60,13 @@ if [ ! -f "${PROJECT_ROOT}/${DIST_DIR}/index.html" ]; then
     exit 1
 fi
 
-# 创建 zip
+# 创建 zip（包含 functions）
 echo "📦 创建部署包..."
 rm -f /tmp/pages-deploy.zip
+# 先复制 functions 到 dist（Pages 需要）
+mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/functions/api"
+cp -r "${PROJECT_ROOT}/web/functions/api/[[path]].js" "${PROJECT_ROOT}/${DIST_DIR}/functions/api/"
+cp -r "${PROJECT_ROOT}/web/functions/api/_lib" "${PROJECT_ROOT}/${DIST_DIR}/functions/api/"
 zip -r /tmp/pages-deploy.zip "${PROJECT_ROOT}/${DIST_DIR}" -x "*.DS_Store" 2>&1 | tail -3
 
 ZIP_SIZE=$(stat -f%z /tmp/pages-deploy.zip 2>/dev/null || stat -c%s /tmp/pages-deploy.zip)
