@@ -8,6 +8,7 @@ import { generateRoutes } from './generate.js';
 import { chatRoutes } from './chat.js';
 import { pipelineRoutes } from './pipeline.js';
 import { mergeRoutes } from './merge.js';
+import { novelRoutes } from './novel.js';
 
 const ok = (c, data) => c.json({ success: true, data });
 
@@ -539,6 +540,7 @@ export function apiRoutes(db, ai) {
   /* ================= 子路由 ================= */
   r.route('/chat', chatRoutes(db, ai));
   r.route('/generate', generateRoutes(db, ai));
+  r.route('/novel', novelRoutes(ai));
   r.route('/pipeline', pipelineRoutes(db, ai));
   r.route('/merge', mergeRoutes(db, ai));
 
