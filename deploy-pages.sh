@@ -61,7 +61,7 @@ echo "📝 恢复 _redirects 文件..."
 git checkout HEAD -- dist/_redirects 2>/dev/null || true
 # 追加 API 路由（如果不存在）
 if ! grep -q "dramaforge-api" dist/_redirects 2>/dev/null; then
-  echo "/api/*  https://dramaforge-api.jl5436.workers.dev/:splat  200" >> dist/_redirects
+  echo "/api/*  /api/[[path]]  200" >> dist/_redirects
 fi
 
 # 检查 dist
