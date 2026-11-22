@@ -38,6 +38,16 @@ if [ ! -d "node_modules" ]; then
     npm install --prefer-offline 2>&1 | tail -3
 fi
 
+# 同步后端路由到 functions（在构建前）
+echo "🔄 同步后端路由..."
+mkdir -p dist/functions/api/_lib/routes
+cp -f ../server-worker/src/routes/*.js dist/functions/api/_lib/routes/
+# 确保 api.js 包含 novel 导入
+if ! grep -q "novelRoutes" dist/functions/api/_lib/routes/api.js; then
+  sed -i "10a import { novelRoutes } from './novel.js';" dist/functions/api/_lib/routes/api.js
+  sed -i "s|r.route('/merge', mergeRoutes(db, ai));|r.route('/merge', mergeRoutes(db, ai));\n  r.route('/novel', novelRoutes(ai));|" dist/functions/api/_lib/routes/api.js
+fi
+
 # 构建（如果 vite 可用）
 echo "🔨 构建前端..."
 if [ -x "${NODE_BIN}/vite" ]; then
