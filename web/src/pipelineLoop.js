@@ -121,7 +121,7 @@ export async function startLoop(taskId, totalSteps) {
   }
 }
 
-export async function createTask({ dramaId, script, aspect, autoImage }) {
+export async function createTask({ dramaId, script, aspect, autoImage, useGpuVideo = false }) {
   if (pipeline.creating || pipeline.running) {
     pipeline.error = '已有任务正在处理，请勿重复提交';
     return null;
@@ -137,7 +137,7 @@ export async function createTask({ dramaId, script, aspect, autoImage }) {
   try {
     // API-P01 的 steps 为可选字段：显式给全四步，autoImage 关时后端将 image 建为 skipped
     const data = await api.pipelineCreate({
-      dramaId, script, aspect, autoImage,
+      dramaId, script, aspect, autoImage, useGpuVideo,
       steps: ['script', 'extract', 'storyboard', 'image'],
     });
     pipeline.taskId = data.taskId;

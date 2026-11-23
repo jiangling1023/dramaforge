@@ -322,6 +322,7 @@ CREATE TABLE IF NOT EXISTS pipeline_tasks (
                       CHECK (status IN ('queued','running','completed','failed')),
   aspect              TEXT DEFAULT '9:16',
   auto_image          INTEGER DEFAULT 0,
+  use_gpu_video       INTEGER DEFAULT 0,          -- G-006：分镜视频走 GPU
   error_summary       TEXT,
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL,
@@ -354,3 +355,41 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_steps_task ON pipeline_steps(task_id, st
 
 -- 5) merges 可选索引（便于按项目取最新合成任务）
 CREATE INDEX IF NOT EXISTS idx_merges_created ON merges(drama_id, created_at DESC);
+
+-- ===================== GPU-007 数据库迁移（云 GPU 分发） =====================
+
+-- 1) merges 表新增 5 个 GPU 字段
+-- 注意：completed_at 已在基础表定义中（见上文 merges DDL），此处不可重复 ADD COLUMN。
+ALTER TABLE merges ADD COLUMN gpu_provider   TEXT;
+ALTER TABLE merges ADD COLUMN gpu_task_id    TEXT;
+ALTER TABLE merges ADD COLUMN gpu_instance_id TEXT;
+ALTER TABLE merges ADD COLUMN cost_estimate  REAL;
+ALTER TABLE merges ADD COLUMN started_at     INTEGER;
+
+-- 2) 新增 gpu_configs 表
+CREATE TABLE IF NOT EXISTS gpu_configs (
+  id              TEXT    PRIMARY KEY NOT NULL,
+  name            TEXT    NOT NULL,
+  provider        TEXT    NOT NULL,
+  config_json     TEXT    NOT NULL,
+  webhook_url     TEXT,             -- GPU 回调地址；为空时用请求 origin + /api/gpu/webhook
+  webhook_secret  TEXT,
+  auto_dispatch   INTEGER DEFAULT 0,
+  capabilities    TEXT,
+  status          TEXT    DEFAULT 'disconnected',
+  last_test_at    INTEGER,
+  last_test_error TEXT,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL
+);
+
+-- 互斥约束：auto_dispatch=1 全表仅允许一条（E-G02 数据库兜底）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_gpu_auto_dispatch
+  ON gpu_configs(auto_dispatch) WHERE auto_dispatch = 1;
+
+-- 3) gen_tasks 表新增 2 个 GPU 字段
+ALTER TABLE gen_tasks ADD COLUMN gpu_provider TEXT;
+ALTER TABLE gen_tasks ADD COLUMN gpu_task_id  TEXT;
+
+-- 4) G-006：pipeline_tasks 记录是否走 GPU 视频
+ALTER TABLE pipeline_tasks ADD COLUMN use_gpu_video INTEGER DEFAULT 0;

@@ -11,3 +11,4 @@ server/data/
 download/
 electron/electron
 electron/electron-dist/
+web/.wrangler/

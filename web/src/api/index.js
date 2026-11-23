@@ -76,4 +76,12 @@ export const api = {
   mergeGet: (id) => req('GET', `/merge/${id}`),
   mergeByEpisode: (episodeId) => req('GET', `/merge/episode/${episodeId}`),
   mergeAdvance: (id, b) => req('POST', `/merge/${id}/advance`, b),
+  mergeDispatch: (id) => req('POST', `/merge/${id}/dispatch`),
+
+  /* GPU 配置 */
+  gpuConfigs: () => req('GET', '/gpu/configs'),
+  gpuConfigCreate: (b) => req('POST', '/gpu/configs', b),
+  gpuConfigUpdate: (id, b) => req('PUT', `/gpu/configs/${id}`, b),
+  gpuConfigDelete: (id) => req('DELETE', `/gpu/configs/${id}`),
+  gpuConfigTest: (id) => req('POST', `/gpu/configs/${id}/test`),
 };

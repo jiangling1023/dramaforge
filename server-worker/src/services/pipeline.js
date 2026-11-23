@@ -6,6 +6,7 @@
 import { now } from '../db.js';
 import { scriptHash, parseScriptToEpisodes, countChars, ensureEpisodes } from './script-parser.js';
 import { runScript, runExtract, runStoryboard, runImage } from './generation.js';
+import { getAutoConfig, supportsVideoGen, dispatchStoryboardVideo } from './gpu-video.js';
 
 const STEPS = ['script', 'extract', 'storyboard', 'image'];
 const DEFAULT_STEPS = ['script', 'extract', 'storyboard'];
@@ -30,7 +31,7 @@ function mapAiError(err) {
 
 /* ============ API-P01 create ============ */
 export async function create(db, _ai, {
-  dramaId, script, aspect = '9:16', autoImage = false, steps = DEFAULT_STEPS,
+  dramaId, script, aspect = '9:16', autoImage = false, steps = DEFAULT_STEPS, useGpuVideo = false,
 } = {}) {
   if (!dramaId) return fail('缺少 dramaId');
   if (typeof script !== 'string' || !script.trim()) return fail('缺少剧本内容');
@@ -62,6 +63,8 @@ export async function create(db, _ai, {
       drama_id: dramaId, script_hash: hash, script_chars: scriptChars,
       total_episodes: episodes.length, completed_episodes: 0, failed_episodes: 0,
       status: 'queued', aspect, auto_image: autoImage ? 1 : 0,
+      // G-006：勾选分镜视频走 GPU。仅记录意图，实际是否走 GPU 在 image 步按 capabilities 判定
+      use_gpu_video: useGpuVideo ? 1 : 0,
       created_at: t, updated_at: t,
     });
   } catch (e) {
@@ -148,7 +151,8 @@ export async function statusSnapshot(db, taskId) {
     currentStep: task.current_step ?? null,
     completedEpisodes: task.completed_episodes, totalEpisodes: task.total_episodes,
     failedEpisodes: task.failed_episodes, aspect: task.aspect || '9:16',
-    autoImage: !!task.auto_image, errorSummary: task.error_summary || null,
+    autoImage: !!task.auto_image, useGpuVideo: !!task.use_gpu_video,
+    errorSummary: task.error_summary || null,
     episodeStates, updatedAt: task.updated_at,
   });
 }
@@ -182,7 +186,42 @@ async function invokeCore(db, ai, task, step) {
   const params = { dramaId: task.drama_id, scope: { episodeIds: [step.episode_id] } };
 
   if (step.step === 'image') {
-    // image core 面向单个资产：每次推进只处理本集首张缺首帧的分镜，保持原子步在 60s 窗口内
+    // G-006：勾选「分镜视频走 GPU」时，优先对首张缺视频的分镜走 GPU 视频生成
+    if (task.use_gpu_video) {
+      const cfg = await getAutoConfig(db);
+      // 能力检测：无配置或不支持 video_gen → 回退 AI 直出（E-G12），不阻断流水线
+      if (cfg && supportsVideoGen(cfg)) {
+        const videoTargets = await db.select('storyboards', { episode_id: step.episode_id }, { order: 'id.asc' });
+        const vt = videoTargets.find((sb) => !sb.video_url);
+        if (vt) {
+          const dispatched = await dispatchStoryboardVideo(db, {
+            storyboardId: vt.id,
+            episodeId: step.episode_id,
+            dramaId: task.drama_id,
+            imagePrompt: vt.image_prompt || '',
+            videoPrompt: vt.video_prompt || '',
+            origin: '', // webhook 地址优先取 gpu_configs.webhook_url
+          });
+          if (dispatched.error) return { ok: false, message: mapAiError(dispatched.error) };
+          // 任务已分发：本步标记 done，video_url 由 Webhook 回调异步回写
+          return {
+            ok: true,
+            data: {
+              gpuDispatched: true,
+              storyboardId: vt.id,
+              gpuTaskId: dispatched.data.taskId,
+              genTaskId: dispatched.data.genTaskId,
+              note: '已分发到 GPU，视频地址将在回调后写入',
+            },
+          };
+        }
+        // 本集分镜都有视频了：当作完成
+        return { ok: true, data: { count: 0, gpuDispatched: true } };
+      }
+      // 配置不支持 video_gen：静默回退到下面的 AI 首帧图直出
+    }
+
+    // 默认：image core 面向单个资产，每次推进只处理本集首张缺首帧的分镜，保持原子步在 60s 窗口内
     const sbs = await db.select('storyboards', { episode_id: step.episode_id }, { order: 'id.asc' });
     const target = sbs.find((sb) => !sb.first_frame_image);
     if (!target) return { ok: true, data: { count: 0 } };

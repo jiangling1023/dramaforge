@@ -60,7 +60,9 @@ fi
 echo "📝 恢复 _redirects 文件..."
 git checkout HEAD -- dist/_redirects 2>/dev/null || true
 # 追加 API 路由（如果不存在）
-if ! grep -q "dramaforge-api" dist/_redirects 2>/dev/null; then
+if ! grep -qF "/api/[[path]]" dist/_redirects 2>/dev/null; then
+  # 清掉可能残留的旧 Worker 转发行，再写入 Pages Functions 路由
+  sed -i '/dramaforge-api/d' dist/_redirects
   echo "/api/*  /api/[[path]]  200" >> dist/_redirects
 fi
 
@@ -77,7 +79,9 @@ rm -f /tmp/pages-deploy.zip
 mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/functions/api"
 cp -r "${PROJECT_ROOT}/web/functions/api/[[path]].js" "${PROJECT_ROOT}/${DIST_DIR}/functions/api/"
 cp -r "${PROJECT_ROOT}/web/functions/api/_lib" "${PROJECT_ROOT}/${DIST_DIR}/functions/api/"
-zip -r /tmp/pages-deploy.zip "${PROJECT_ROOT}/${DIST_DIR}" -x "*.DS_Store" 2>&1 | tail -3
+# 必须在 dist 内以相对路径打包：绝对路径会让 Pages 把 functions 放到错误层级，API 全部 404/405
+# direct upload：zip 根目录即站点根，直接打包 dist 内容（不要带 dist/ 前缀）
+(cd "${PROJECT_ROOT}/${DIST_DIR}" && zip -r /tmp/pages-deploy.zip . -x "*.DS_Store") 2>&1 | tail -3
 
 ZIP_SIZE=$(stat -f%z /tmp/pages-deploy.zip 2>/dev/null || stat -c%s /tmp/pages-deploy.zip)
 echo "   压缩包大小: ${ZIP_SIZE} bytes"
@@ -102,11 +106,12 @@ url = f"https://api.cloudflare.com/client/v4/accounts/{cf_account}/pages/project
 boundary = '----DeployBoundary7MA4YWxkTrZu0gW'
 body = b''
 body += f'--{boundary}\r\n'.encode()
-body += b'Content-Disposition: form-data; name="manifest"\r\n\r\n'
+body += b'Content-Disposition: form-data; name="manifest"\r\n'
+body += b'Content-Type: application/json\r\n\r\n'
+# 不要传 branch：该项目 source=null（非 Git 连接），带 branch 会触发 clone_repo 走 Git 构建，忽略上传的 zip
 body += json.dumps({
     "production": True,
-    "comment": "Deploy from local script",
-    "branch": "main"
+    "comment": "Deploy from local script"
 }).encode() + b'\r\n'
 body += f'--{boundary}\r\n'.encode()
 body += b'Content-Disposition: form-data; name="zip"; filename="deploy.zip"\r\n'

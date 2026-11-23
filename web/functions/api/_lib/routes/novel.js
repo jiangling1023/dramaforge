@@ -36,25 +36,18 @@ export const novelRoutes = (ai) => {
     const userPrompt = buildUserPrompt(b);
 
     try {
-      // 调用 AI 生成（禁用流式，获取完整 JSON）
+      // 调用 AI 生成：走默认流式。非流式长输出易撞上游网关 520/1015，流式由 ai 层累积正文。
+      // 不指定 model：由 ai.chat 按优先级逐个尝试所有启用配置，遇限流/欠费/模型下线自动降级。
       const result = await ai.chat({
-        model: aiConfig.default_model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
         maxTokens: 4000,
-        stream: false,
       });
 
-      // 解析返回的 JSON 结构
-      let generatedData;
-      try {
-        generatedData = JSON.parse(result.content);
-      } catch {
-        // 如果不是 JSON，包装成标准格式
-        generatedData = { raw_output: result.content };
-      }
+      // 解析返回的 JSON 结构：模型常把 JSON 包在 ```json ... ``` 围栏里，先剥离再解析
+      const generatedData = parseModelJson(result.content);
 
       return ok(c, {
         ...generatedData,
@@ -139,4 +132,49 @@ ${novel_content.substring(0, 3000)}...
 2. 每集设置明确的戏剧钩子
 3. 生成适合 AI 生成的视觉提示词
 4. 输出完整的 JSON 结构`;
+}
+
+/**
+ * 鲁棒解析模型输出：剥离 markdown 围栏 / 前后多余文字，提取首个完整 JSON 对象。
+ * 模型常返回 ```json {...} ``` 或 "这是结果：{...}"，直接 JSON.parse 会失败并退化成 raw_output，
+ * 导致前端拿不到 characters/episodes 等结构化字段。这里按括号配平截取，兼容围栏与裸文本。
+ */
+function parseModelJson(content) {
+  const text = String(content || '').trim();
+  if (!text) return { raw_output: content };
+
+  // 1) 直接解析（模型已输出纯 JSON）
+  try { return JSON.parse(text); } catch { /* 继续处理 */ }
+
+  // 2) 剥离 markdown 代码围栏（```json ... ``` 或 ``` ... ```）
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidates = [];
+  if (fenced && fenced[1]) candidates.push(fenced[1].trim());
+
+  // 3) 从任意文本中按大括号配平截取第一个完整 JSON 对象
+  const start = text.indexOf('{');
+  if (start >= 0) {
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) {
+        if (esc) { esc = false; continue; }
+        if (ch === '\\') { esc = true; continue; }
+        if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+    if (end > start) candidates.push(text.slice(start, end));
+  }
+
+  for (const c of candidates) {
+    if (!c) continue;
+    try { return JSON.parse(c); } catch { /* 试下一个候选 */ }
+  }
+
+  // 4) 全失败才退回 raw_output
+  return { raw_output: content };
 }

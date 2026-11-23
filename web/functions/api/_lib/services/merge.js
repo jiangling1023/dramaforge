@@ -31,6 +31,12 @@ function toApi(row) {
     errorMsg: row.error_msg,
     createdAt: row.created_at,
     completedAt: row.completed_at,
+    // GPU 分发字段（G-003/G-005）：存量行为 NULL，前端据此判断是否已分发
+    gpuProvider: row.gpu_provider || null,
+    gpuTaskId: row.gpu_task_id || null,
+    gpuInstanceId: row.gpu_instance_id || null,
+    costEstimate: row.cost_estimate ?? null,
+    startedAt: row.started_at || null,
   };
 }
 
@@ -115,4 +121,129 @@ export async function advance(db, id, body = {}) {
   if (!changes) return fail('状态已被其他回调推进', 409, 'CONFLICT');
 
   return done(toApi(await db.first('merges', { id: Number(id) })));
+}
+
+/* ==================== GPU 自动/手动分发（G-003 / G-004） ==================== */
+
+/** 10 秒超时 fetch：边缘函数不能让厂商接口挂死整个请求 */
+async function fetchTimeout(url, options = {}, ms = 10000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...options, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 调厂商 API 创建 GPU 任务，返回 { taskId, instanceId }。
+ * 多厂商载荷统一为 { segments, concat_params, output_path, webhook_url }，差异只在入口与鉴权。
+ */
+async function callProvider(provider, cfg, payload) {
+  const key = cfg.api_key || cfg.apiKey;
+
+  if (provider === 'runpod') {
+    const ep = cfg.endpoint_id || cfg.endpointId;
+    if (!ep || !key) throw new Error('RunPod 缺少 endpoint_id 或 api_key');
+    const res = await fetchTimeout(`https://api.runpod.ai/v2/${ep}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ input: payload }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const data = await res.json().catch(() => ({}));
+    return { taskId: data.id || data.jobId || null, instanceId: ep };
+  }
+
+  if (provider === 'vastai') {
+    if (!key) throw new Error('Vast.ai 缺少 api_key');
+    // Vast.ai 无原生任务队列，用实例 ID 作为任务载体，命令异步执行
+    const instanceId = cfg.instance_id || cfg.instanceId || cfg.instance_label_filter || '';
+    if (!instanceId) throw new Error('Vast.ai 缺少 instance_id');
+    const res = await fetchTimeout('https://console.vast.ai/api/v0/commands/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ instance_id: instanceId, command: JSON.stringify(payload) }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const data = await res.json().catch(() => ({}));
+    return { taskId: String(data.id || data.command_id || ''), instanceId: String(instanceId) };
+  }
+
+  // 自建 / AutoDL：对齐 RunPod REST 语义，入口与鉴权可配。
+  // AutoDL 算力云走「链接转代码」——容器中自启 HTTP 服务，base_url 即 seetacloud 访问链接。
+  const base = (cfg.base_url || cfg.baseUrl || '').replace(/\/+$/, '');
+  if (!base) throw new Error(`${provider === 'autodl' ? 'AutoDL' : '自建'}缺少 base_url`);
+  const res = await fetchTimeout(`${base}/api/v1/tasks`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key ? { Authorization: `Bearer ${key}` } : {}),
+      ...(cfg.custom_headers || {}),
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const data = await res.json().catch(() => ({}));
+  return { taskId: data.id || data.task_id || null, instanceId: data.instance_id || null };
+}
+
+/**
+ * 分发到 GPU：查自动分发配置 → 调厂商 → 回写 processing + GPU 字段。
+ * 无配置时保持 pending，交给前端「发送到 GPU」手动触发（G-004 复用本函数）。
+ * @param origin 请求来源，用于拼 webhook 回调地址（由路由层透传）
+ */
+export async function dispatch(db, mergeId, origin = '') {
+  const row = await db.first('merges', { id: Number(mergeId) });
+  if (!row) return fail('合成任务不存在', 404);
+  if (row.status !== 'pending') return fail(`当前状态 ${row.status} 不可分发`, 409, 'CONFLICT');
+
+  const cfg = await db.first('gpu_configs', { auto_dispatch: 1 });
+  if (!cfg) return fail('未配置自动分发，请先在「云 GPU 配置」新增并开启自动分发', 409, 'NO_GPU_CONFIG');
+
+  let config;
+  try {
+    config = JSON.parse(cfg.config_json || '{}');
+  } catch {
+    return fail('GPU 配置格式异常，请重新保存', 500);
+  }
+
+  // 回调地址优先用配置里显式指定的（GPU 侧需公网可达）
+  const webhookUrl = cfg.webhook_url || `${origin}/api/gpu/webhook`;
+  const payload = {
+    // merge_id/config_id 让回调能精确定位任务与验签配置，避免靠 output_path 反推（G-005）
+    merge_id: row.id,
+    config_id: cfg.id,
+    segments: parseJson(row.segments, []),
+    output_path: `runs/${row.id}/merged.mp4`,
+    webhook_url: webhookUrl,
+    webhook_secret: cfg.webhook_secret || '',
+  };
+
+  let result;
+  try {
+    result = await callProvider(cfg.provider, config, payload);
+  } catch (e) {
+    // 分发失败必须可见：标 failed 并留错误摘要，供前端重试（E-G05）
+    await db.update('merges', { id: Number(mergeId) }, {
+      status: 'failed', error_msg: `分发失败: ${e.message}`, completed_at: now(),
+    });
+    return fail(`分发失败: ${e.message}`, 502, 'UPSTREAM_ERROR');
+  }
+
+  // CAS：仅 pending 可跃迁，防止并发重复分发产生两个 GPU 任务（E-G07 幂等）
+  const changes = await db.raw(
+    'UPDATE merges SET status = ?, gpu_provider = ?, gpu_task_id = ?, gpu_instance_id = ?, started_at = ? WHERE id = ? AND status = ?',
+    ['processing', cfg.provider, result.taskId, result.instanceId, now(), Number(mergeId), 'pending']
+  );
+  if (!changes) return fail('任务已被其他分发抢占', 409, 'CONFLICT');
+
+  return done({
+    mergeId: Number(mergeId),
+    status: 'processing',
+    gpuProvider: cfg.provider,
+    gpuTaskId: result.taskId,
+    gpuInstanceId: result.instanceId,
+  });
 }

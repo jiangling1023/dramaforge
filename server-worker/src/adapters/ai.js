@@ -79,7 +79,10 @@ async function chatStream(url, apiKey, body, model, o) {
       const text = await res.text();
       let msg = `HTTP ${res.status}`;
       try { msg = JSON.parse(text)?.error?.message || msg; } catch { /* 原样 */ }
-      throw new Error(String(msg).slice(0, 400));
+      // 必须带 status：上层 chat() 的降级判定依赖它判断是否为限流/额度错误
+      const err = new Error(String(msg).slice(0, 400));
+      err.status = res.status;
+      throw err;
     }
     if (!res.body) throw new Error('流式响应没有 body');
 
@@ -134,10 +137,18 @@ export function createAi(db) {
     return row ? plain(row) : null;
   }
 
-  async function chat(o) {
-    const cfg = await getActiveConfig('text');
-    if (!cfg) throw new Error('尚未配置文本模型，请先在设置里添加');
+  /** 列出全部启用的文本配置，按优先级倒序（供限流降级逐个尝试） */
+  async function listActiveConfigs(serviceType) {
+    const rows = await db.select(
+      'ai_configs',
+      { service_type: serviceType, is_active: 1 },
+      { order: 'is_default.desc,priority.desc,id.asc' }
+    );
+    return (rows || []).map(plain);
+  }
 
+  /** 单个配置执行一次对话请求（不含降级逻辑） */
+  async function chatOnce(cfg, o) {
     const st = settingsOf(cfg);
     const model = modelOf(cfg, o.model);
     const url = joinUrl(cfg.base_url, cfg.endpoint || '/chat/completions');
@@ -163,6 +174,40 @@ export function createAi(db) {
       usage: data?.usage || {},
       model,
     };
+  }
+
+  // 可降级错误：限流、配额、模型下线、服务不可用 —— 这些都可能是单一配置的问题，换下一个配置即可。
+  // 不降级的错误：请求体本身非法（如消息格式错误）——重试其它配置无意义，立即抛出。
+  const shouldFallback = (e) => {
+    const status = e?.status;
+    const msg = String(e?.message || '').toLowerCase();
+    if (status === 429 || status === 1015 || status === 503 || status === 502 || status === 520 || status === 402) return true;
+    // 兜底：部分流式/网关错误只体现在 message 里（如 "HTTP 429"），status 可能缺失
+    if (/^http (429|402|500|502|503|504|520)\b/.test(msg)) return true;
+    return /\b1015\b/.test(msg)
+      || /rate.?limit|too many requests|quota|overloaded|限流|频率/.test(msg)
+      || /model does not exist|invalid model|model not found|模型不存在|模型.*(不存在|无效)/.test(msg)
+      || /no access to model|invalid token|invalid api.?key|authentication|unauthorized|令牌|密钥.*(无效|错误)/.test(msg)
+      || /insufficient.*balance|balance.*insufficient|余额不足|欠费|支付 Required|payment required/.test(msg)
+      || /service unavailable|暂时不可用/.test(msg);
+  };
+
+  async function chat(o) {
+    // 降序尝试所有启用的文本配置：主配置限流/模型下线时自动切换下一个
+    const configs = await listActiveConfigs('text');
+    if (!configs.length) throw new Error('尚未配置文本模型，请先在设置里添加');
+
+    let lastErr;
+    for (const cfg of configs) {
+      try {
+        return await chatOnce(cfg, o);
+      } catch (e) {
+        lastErr = e;
+        if (!shouldFallback(e)) throw e;
+        // 可降级错误：换下一个配置；已是最后一个则跳出
+      }
+    }
+    throw new Error(`全部文本模型均不可用: ${lastErr?.message || '未知错误'}`);
   }
 
   async function image(o) {
@@ -413,5 +458,5 @@ export function createAi(db) {
     return { ok: true, message: '连接测试成功', raw: data };
   }
 
-  return { chat, image, video, videoStatus, audio, probe, getActiveConfig };
+  return { chat, image, video, videoStatus, audio, probe, getActiveConfig, listActiveConfigs };
 }

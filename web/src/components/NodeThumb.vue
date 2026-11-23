@@ -1,128 +1,122 @@
 <script setup>
 /**
- * NodeThumb · 首帧/资产缩略图统一外壳
- * 无 src 时渲染内联 SVG 占位（离线可见、零外部图片请求），有 src 时显示真实图、加载失败回退占位。
- * 不同 seed 派生确定性差异图形；seed 含类型关键字（如 storyboard:12）时套用该类型配色与图标。
+ * NodeThumb · 统一缩略图组件
+ * 根据 type 渲染内联 SVG，用 data.color 填充；无 data 时取类型语义色并显示首字母
+ * Props：type / data / size(sm/md/lg)
  */
-import { computed, getCurrentInstance, ref, watch } from 'vue';
+import { computed } from 'vue';
 
 const props = defineProps({
-  seed: { type: [String, Number], default: 0 },    // 差异化种子，可含类型关键字
-  ratio: { type: String, default: '9:16' },        // 宽高比 '9:16' / '16:9' / '1:1' …
-  size: { type: [String, Number], default: null }, // 缩略图宽度（px 数值或 CSS 长度）；空则撑满父容器
-  src: { type: String, default: '' },              // 真实图片地址；空则显示占位
+  type: { type: String, required: true },
+  data: { type: Object, default: () => ({}) },
+  size: { type: String, default: 'md' }, // sm | md | lg
 });
 
-// 同页多实例共用 <defs> 会串色，渐变 id 必须随实例唯一
-const uid = getCurrentInstance()?.uid ?? 0;
-const gid = `nt-g-${uid}`;
-const hid = `nt-h-${uid}`;
+// 尺寸映射
+const SIZE_MAP = { sm: 32, md: 48, lg: 72 };
+const px = computed(() => SIZE_MAP[props.size] ?? 48);
 
-const imgFailed = ref(false);
-watch(() => props.src, () => { imgFailed.value = false; }); // src 变化要撤销上一次的失败态
-const showImage = computed(() => !!props.src && !imgFailed.value);
+// 类型 → 语义色 CSS 变量（无 data 时兜底）
+const TYPE_COLOR_VAR = {
+  project: '--violet',
+  drama: '--violet',
+  episode: '--indigo',
+  character: '--violet',
+  scene: '--green',
+  prop: '--amber',
+  shot: '--teal',
+};
 
-const ratioCss = computed(() => {
-  const m = /^(\d+)\s*:\s*(\d+)$/.exec(props.ratio || '');
-  return m ? `${m[1]} / ${m[2]}` : '9 / 16';
+// 类型 → SVG 路径（内联图标，24x24 viewBox）
+const ICON_PATHS = {
+  project: 'M12 3L2 9v12l10 6 10-6V9L12 3z',           // 文档/项目
+  drama: 'M12 3L2 9v12l10 6 10-6V9L12 3z',
+  episode: 'M4 4h16v16H4zM8 8h8v8H8z',                   // 电视/剧集
+  character: 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z', // 用户
+  scene: 'M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z', // 场景/地图标记
+  prop: 'M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14H6v-2h6v2zm4-8H6V9h10v2zm0 4H6v-2h10v2z', // 盒子/道具
+  shot: 'M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z', // 电影/分镜
+};
+
+const typeKey = computed(() => (props.type || '').toLowerCase());
+const iconPath = computed(() => ICON_PATHS[typeKey.value] || ICON_PATHS.project);
+
+// 显示内容：data.name 首字母，或 type 首字母
+const displayChar = computed(() => {
+  const name = props.data?.name || props.type;
+  return name?.charAt(0)?.toUpperCase() || '?';
 });
-const boxStyle = computed(() => ({
-  aspectRatio: ratioCss.value,
-  width: props.size == null ? '100%' : (typeof props.size === 'number' ? `${props.size}px` : props.size),
-}));
 
-/* 类型视觉：seed 命中关键字则用固定配色/图标，否则按 hash 从调色板派生 */
-const TYPE_VISUALS = {
-  drama: ['#3A2E5C', '#6A5AA8', '#C9B6FF', 'clapper'],
-  episode: ['#233A55', '#4A86C7', '#A8D2FF', 'layers'],
-  character: ['#1F4A45', '#3FB6A5', '#A8F0E4', 'people'],
-  scene: ['#2C4A38', '#6FB684', '#C8ECCF', 'image'],
-  prop: ['#5A3E1C', '#DDA24A', '#FFE0A0', 'target'],
-  storyboard: ['#5C2E45', '#D96A9C', '#FFBEDC', 'film'],
-  video: ['#5A2A2A', '#E2706A', '#FFC0B0', 'play'],
-};
-const PALETTES = [
-  ['#1B2A3F', '#4A3A31', '#FFD79A'],
-  ['#6E4A3E', '#3A3340', '#F09070'],
-  ['#8A6238', '#2E2A28', '#FFD9A0'],
-  ['#39404F', '#8A5A55', '#FFC9B2'],
-  ['#2F3B52', '#566380', '#A8C0E0'],
-  ['#2C4A38', '#5C8A68', '#BFE0C4'],
-  ['#4A2E45', '#8A5A78', '#F0BAD0'],
-  ['#5A3E1C', '#A8742F', '#FFE0A0'],
-];
-const ICONS = {
-  clapper: '<rect x="3" y="8" width="18" height="12" rx="2"/><path d="M3 8l2.5-5 4 5M9.5 8l2.5-5 4 5M16 8l2.5-5 3 5"/>',
-  layers: '<path d="M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5M3 17l9 5 9-5"/>',
-  people: '<circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 5a3 3 0 010 6M18 14c2 .9 3 2.8 3 5"/>',
-  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="M4 17l5-5 3.5 3.5 3-3 4.5 4.5"/>',
-  target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
-  film: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4"/>',
-  play: '<circle cx="12" cy="12" r="9"/><path d="M10 8.5l5.5 3.5L10 15.5z"/>',
-};
-const ICON_KEYS = Object.keys(ICONS);
-
-// FNV-1a：同一 seed 恒定得到同一张图，避免重渲染时占位跳变
-function hash(s) {
-  let h = 2166136261;
-  for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
-  return h >>> 0;
-}
-
-const art = computed(() => {
-  const s = String(props.seed ?? '');
-  const h = hash(s);
-  const type = Object.keys(TYPE_VISUALS).find((k) => s.includes(k));
-  const [c0, c1, glow] = type ? TYPE_VISUALS[type] : PALETTES[h % PALETTES.length];
-  const iconKey = type ? TYPE_VISUALS[type][3] : ICON_KEYS[h % ICON_KEYS.length];
-  return {
-    c0, c1, glow,
-    icon: ICONS[iconKey],
-    gx: 22 + ((h >> 4) & 45),          // 光晕错位
-    gy: 34 + ((h >> 9) & 40),
-    horizon: 100 + ((h >> 13) & 26),   // 地平线高低
-    personX: 16 + ((h >> 17) & 40),
-    twin: (h >> 21) & 1,               // 是否出现第二个人物剪影
-  };
+// 填充色：data.color 优先，否则用 CSS 变量
+const fillStyle = computed(() => {
+  if (props.data?.color) return props.data.color;
+  const varName = TYPE_COLOR_VAR[typeKey.value] || '--violet';
+  return `var(${varName})`;
 });
 </script>
 
 <template>
-  <div class="node-thumb" :style="boxStyle">
-    <img v-if="showImage" :src="src" alt="" @error="imgFailed = true" />
-    <svg v-else viewBox="0 0 90 160" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-      <defs>
-        <linearGradient :id="gid" x1="0" y1="0" x2="0.6" y2="1">
-          <stop offset="0" :stop-color="art.c0" />
-          <stop offset="1" :stop-color="art.c1" />
-        </linearGradient>
-        <radialGradient :id="hid">
-          <stop stop-color="#FFFFFF" stop-opacity=".7" />
-          <stop offset="1" :stop-color="art.glow" stop-opacity="0" />
-        </radialGradient>
-      </defs>
-      <rect width="90" height="160" :fill="`url(#${gid})`" />
-      <circle :cx="art.gx" :cy="art.gy" r="34" :fill="`url(#${hid})`" opacity=".55" />
-      <!-- 地平线 + 人物剪影：几何参数随 seed 变化，形成可区分占位 -->
-      <rect x="0" :y="art.horizon" width="90" :height="160 - art.horizon" fill="#101820" opacity=".5" />
-      <path :d="`M${art.personX} ${art.horizon}c0-13 6-20 12-20s12 7 12 20z`" fill="#0C121C" opacity=".88" />
-      <path v-if="art.twin" :d="`M${art.personX + 26} ${art.horizon}c0-10 5-16 10-16s10 6 10 16z`" fill="#0C121C" opacity=".7" />
-      <!-- 类型图标：内联 SVG path 居中叠加，不用 emoji 当主图标 -->
-      <g transform="translate(27 58) scale(1.5)" fill="none" stroke="#fff" stroke-opacity=".3"
-         stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" v-html="art.icon" />
+  <div
+    class="node-thumb"
+    :style="{ width: `${px}px`, height: `${px}px` }"
+    role="img"
+    :aria-label="`${props.type}: ${props.data?.name || '未命名'}`"
+  >
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      style="width:100%;height:100%;display:block;"
+    >
+      <!-- 背景圆/方 -->
+      <rect
+        x="1"
+        y="1"
+        width="22"
+        height="22"
+        rx="3"
+        :fill="fillStyle"
+      />
+      <!-- 图标路径 -->
+      <path
+        :d="iconPath"
+        fill="white"
+        opacity="0.95"
+        transform="scale(0.65) translate(4, 4)"
+      />
+      <!-- 首字母兜底（当图标为空时显示） -->
+      <text
+        v-if="!iconPath"
+        x="12"
+        y="16"
+        text-anchor="middle"
+        fill="white"
+        :font-size="px * 0.55"
+        font-weight="600"
+        :font-family="fontSans"
+      >{{ displayChar }}</text>
     </svg>
   </div>
 </template>
 
 <style scoped>
 .node-thumb {
-  position: relative;
-  display: block;
-  overflow: hidden;
-  border-radius: 6px;
-  background: #2B3040;
-  line-height: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-node);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  transition: transform var(--t), box-shadow var(--t);
+  flex-shrink: 0;
 }
-.node-thumb > svg,
-.node-thumb > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.node-thumb:hover {
+  transform: scale(1.05);
+  box-shadow: var(--s2);
+  z-index: 1;
+}
+.node-thumb:focus-visible {
+  outline: none;
+  box-shadow: var(--ring), var(--s2);
+}
 </style>

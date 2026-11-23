@@ -23,6 +23,7 @@ const emit = defineEmits(['start', 'close', 'rerun-step', 'restore', 'log', 'sel
 const script = ref('');
 const aspect = ref('9:16');   // A-07 冻结默认
 const autoImageOn = ref(false); // A-07 冻结默认
+const useGpuVideo = ref(false); // G-006：分镜视频走 GPU（需 GPU 支持 video_gen，否则自动回退直出）
 const scriptError = ref('');
 
 const st = computed(() => pipeline.state || (props.status ? {
@@ -72,7 +73,7 @@ function onStart() {
   if (!props.dramaId) { scriptError.value = '请先选择项目'; return; }
   if (chars.value < 20) { scriptError.value = '剧本内容过少，无法生成（至少 20 字）'; return; } // E-01 前端拦截
   scriptError.value = '';
-  const payload = { dramaId: props.dramaId, script: script.value, aspect: aspect.value, autoImage: autoImageOn.value };
+  const payload = { dramaId: props.dramaId, script: script.value, aspect: aspect.value, autoImage: autoImageOn.value, useGpuVideo: useGpuVideo.value };
   emit('start', payload);
   createTask(payload); // create 后立即启动脱离弹层的循环
 }
@@ -132,6 +133,9 @@ function onScriptInput() { if (scriptError.value) scriptError.value = ''; }
               <option :value="false">关</option>
               <option :value="true">开</option>
             </select>
+            <label class="pm-gpu" title="需云 GPU 支持 video_gen，否则自动回退 AI 直出">
+              <input type="checkbox" v-model="useGpuVideo" /> 分镜视频走 GPU
+            </label>
           </div>
 
           <ManualStepBox

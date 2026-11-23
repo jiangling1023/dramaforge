@@ -8,6 +8,7 @@
 
 import { plain, plainAll, parseJson, now } from '../db.js';
 import { create as createPipeline } from './pipeline.js';
+import { gpuParseConnection, gpuConfigSave, gpuTestConnectivity } from './gpu-parse.js';
 
 const norm = (s) => String(s || '').trim().toLowerCase();
 
@@ -19,7 +20,7 @@ export const EXPERTS = {
   },
   producer: {
     id: 'producer', name: '制片·老元代', role: '资产统筹 / 项目剧集 / 成本',
-    color: '#D98B2B', tools: ['project.*', 'generate.run(extract)'],
+    color: '#D98B2B', tools: ['project.*', 'generate.run(extract)', 'gpu.parse_connection', 'gpu.config_save'],
   },
   storyboard: {
     id: 'storyboard', name: '分镜师·阿镜', role: '镜头 / 机位 / 出图出视频',
@@ -29,7 +30,7 @@ export const EXPERTS = {
 
 const EXPERT_PERSONAS = {
   writer: '你是编剧·老周，负责剧本改写/台词/冲突反转，优先用 generate.run(kind=script)、storyboard.update(result)',
-  producer: '你是制片·老元代，负责资产统筹/项目剧集/成本，优先用 project.*、generate.run(kind=extract)',
+  producer: '你是制片·老元代，负责资产统筹/项目剧集/成本/云GPU接入，优先用 project.*、generate.run(kind=extract)、gpu.parse_connection、gpu.config_save',
   storyboard: '你是分镜师·阿镜，负责镜头/机位/出图出视频，优先用 storyboard.*、canvas.*、generate.run(kind=storyboard)',
 };
 
@@ -48,7 +49,13 @@ export function expertForTool(name, params = {}) {
   if (name.startsWith('project.')) return 'producer';
   if (name.startsWith('canvas.')) return 'storyboard';
   if (name.startsWith('storyboard.')) return 'storyboard';
+  if (name.startsWith('gpu.')) return 'producer'; // GPU 工具归制片·老元代
   return null;
+}
+
+/** 检查消息是否与 GPU 接入相关，用于自动路由到制片·老元代 */
+function isGpuRelated(text) {
+  return /gpu|runpod|vast\.ai|vastai|自建.*gpu|云.*gpu|接入.*gpu|gpu.*接入/i.test(String(text || ''));
 }
 
 export function buildTools(db) {
@@ -224,6 +231,27 @@ export function buildTools(db) {
         hint: `已创建生成任务 #${taskId}，前端请轮询 /api/pipeline/${taskId} 或继续 advance 直至完成`,
       };
     },
+
+    /* -------- GPU 接入：自然语言解析（GPU-002） -------- */
+    'gpu.parse_connection': async (params) => {
+      const { natural_text } = params || {};
+      if (!natural_text) throw new Error('缺少 natural_text 参数');
+      const parsed = gpuParseConnection(natural_text);
+      return { type: 'gpu_config_draft', ...parsed };
+    },
+
+    'gpu.config_save': async (params) => {
+      const { provider, name, config_json, webhook_secret, auto_dispatch, capabilities } = params || {};
+      if (!provider || !name || !config_json) throw new Error('缺少必填字段: provider, name, config_json');
+      const saved = await gpuConfigSave(db, { provider, name, config_json, webhook_secret, auto_dispatch, capabilities });
+      if (!saved.success) throw new Error(saved.error || '保存失败');
+      // 自动触发连通性测试
+      let testResult = null;
+      try {
+        testResult = await gpuTestConnectivity(db, saved.data.id);
+      } catch { /* 测试失败不阻断保存成功 */ }
+      return { type: 'gpu_config_saved', id: saved.data.id, test: testResult, hint: '配置已保存，可前往「云 GPU 配置」页面查看和管理' };
+    },
   });
 }
 
@@ -258,8 +286,17 @@ export const ASSISTANT_SYSTEM = `你是 DramaForge 智能助手，一个短剧�
 每次只以一位专家身份主答；确需协作时说明「正在与 X 协作」。
 
 工具调用格式（任选一种，平台自动识别）：
-格式A（推荐）：<tool_use name="project.characters">\n{}\n</tool_use>
-格式B：<tool_calls_begin>\n{"tool":"project.characters","args":{}}\n<tool_calls_end>`;
+格式A（推荐）：  <tool_use name="project.characters">\n{}\n</tool_use>
+格式B：<tool_calls_begin>\n{"tool":"project.characters","args":{}}\n<tool_calls_end>
+
+【GPU 接入专项规则】
+当用户发送与云 GPU 接入相关的内容（含 RunPod、Vast.ai、自建、GPU 接入等关键词）时：
+1. 自动切换为制片·老元代身份 [expert:producer]
+2. 调用 gpu.parse_connection 解析连接信息
+3. 若 missing_fields 非空 → 追问缺失字段（如"请提供厂商（RunPod/Vast.ai/自建）"或"请提供 API Key"）
+4. 若信息完整 → 调用 gpu.config_save 保存并自动测试连通性
+5. 测试结果反馈给用户：成功提示"已保存并连通正常"，失败提示"已保存但连通异常：{detail}"
+禁止在未获得厂商信息的情况下自动创建空配置。`;
 
 /* ====================================================================
  * 工具定义（供模型理解工具能力）
@@ -378,6 +415,33 @@ export const TOOL_SCHEMA = [
         kind: { type: 'string', enum: ['script', 'extract', 'storyboard'] },
         episodeIds: { type: 'array', items: { type: 'integer' }, description: '可选，指定集ID数组，不传则只处理当前集' },
         storyboardNumbers: { type: 'array', items: { type: 'integer' }, description: '可选，只处理指定镜号' },
+      },
+    },
+  },
+  {
+    name: 'gpu.parse_connection',
+    description: '解析自然语言中的云 GPU 连接信息（RunPod/Vast.ai/自建），返回结构化配置草案',
+    inputSchema: {
+      type: 'object',
+      required: ['natural_text'],
+      properties: {
+        natural_text: { type: 'string', description: '用户自然语言输入，如"帮我接入 RunPod，API Key sk-xxx，Endpoint https://..."' },
+      },
+    },
+  },
+  {
+    name: 'gpu.config_save',
+    description: '保存 GPU 配置到 gpu_configs 表并自动测试连通性',
+    inputSchema: {
+      type: 'object',
+      required: ['provider', 'name', 'config_json'],
+      properties: {
+        provider: { type: 'string', enum: ['runpod', 'vastai', 'custom'] },
+        name: { type: 'string', description: '配置名称' },
+        config_json: { type: 'object', description: '厂商差异化字段' },
+        webhook_secret: { type: 'string', description: 'Webhook 验签密钥（可选）' },
+        auto_dispatch: { type: 'boolean', description: '是否开启自动分发' },
+        capabilities: { type: 'array', items: { type: 'string' }, description: '能力标签，如 ["ffmpeg", "video_gen"]' },
       },
     },
   },

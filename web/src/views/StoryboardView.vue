@@ -20,6 +20,8 @@ const emit = defineEmits(['merge', 'select-shot']);
 
 const task = ref(props.mergeTask ? { ...props.mergeTask } : null);
 const submitting = ref(false);
+const dispatching = ref(false);
+const dispatchError = ref('');
 const submitError = ref('');
 const activeNo = ref(null);
 let pollTimer = null;
@@ -113,6 +115,24 @@ async function submitMerge() {
   }
 }
 
+// G-004 手动分发：无自动分发配置时，用户点此把 pending 任务送到 GPU
+async function dispatchToGpu() {
+  const id = task.value?.id;
+  if (!id || dispatching.value || task.value?.status !== 'pending') return;
+  dispatching.value = true;
+  dispatchError.value = '';
+  try {
+    const res = await api.mergeDispatch(id);
+    publish({ ...task.value, ...res, _startedAt: Date.now() });
+    startPoll();
+    pollOnce();
+  } catch (e) {
+    dispatchError.value = e?.message || '分发失败';
+  } finally {
+    dispatching.value = false;
+  }
+}
+
 function onSelect(shot) {
   activeNo.value = Number(shot?.storyboard_number) || Number(shot?.no) || null;
   emit('select-shot', shot);
@@ -154,10 +174,21 @@ onBeforeUnmount(stopPoll);
           <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>
           {{ submitting ? '提交中…' : '合成整集视频' }}
         </button>
+        <button
+          v-if="task?.status === 'pending' && !task?.gpuTaskId"
+          class="btn primary gpu"
+          :disabled="dispatching"
+          title="把已提交的任务手动发送到已配置的云 GPU"
+          @click="dispatchToGpu"
+        >
+          <svg class="ic" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9zM9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg>
+          {{ dispatching ? '分发中…' : '发送到 GPU' }}
+        </button>
       </div>
     </header>
 
     <div v-if="submitError" class="sv-err">合成提交失败：{{ submitError }}</div>
+    <div v-if="dispatchError" class="sv-err">GPU 分发失败：{{ dispatchError }}</div>
     <div v-if="!hasShots" class="sv-noshots">本集暂无可合成分镜</div>
 
     <MergeStatusCard

@@ -9,11 +9,13 @@ import ChatPanel from './components/ChatPanel.vue';
 import Canvas from './views/Canvas.vue';
 import StoryboardView from './views/StoryboardView.vue';
 import AssistantView from './views/AssistantView.vue';
+import GPUConfigView from './views/GPUConfigView.vue';
 
 const viewTabs = [
   { id: 'main', label: '主工作台', area: '创作画布' },
   { id: 'storyboard', label: '分镜视图', area: '分镜视图' },
   { id: 'assistant', label: '智能助手', area: '智能助手' },
+  { id: 'gpu-config', label: '云 GPU 配置', area: '云 GPU 配置' },
 ];
 const EP_STATE_TEXT = { done: '已完成', running: '处理中', pending: '已入队', failed: '失败' };
 
@@ -370,6 +372,9 @@ onMounted(boot);
           </section>
           <section v-show="view === 'assistant'" class="pane">
             <AssistantView :messages="assistantMessages" :experts="EXPERTS" :loading="assistantLoading" @send="onAssistantSend" />
+          </section>
+          <section v-show="view === 'gpu-config'" class="pane">
+            <GPUConfigView />
           </section>
         </div>
         <ChatPanel
