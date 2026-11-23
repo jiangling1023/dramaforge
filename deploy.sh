@@ -5,7 +5,7 @@
 set -e
 
 # 配置
-CF_API_TOKEN="${CF_API_TOKEN}"
+CF_API_TOKEN="${CF_API_TOKEN:?请设置环境变量 CF_API_TOKEN}"
 CF_ACCOUNT_ID="195728e627f02c9a0c5b12633ae74c5b"
 PROJECT_NAME="dramaforge-app"
 WORKER_NAME="dramaforge-api"

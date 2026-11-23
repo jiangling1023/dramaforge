@@ -10,7 +10,7 @@ WEB="$ROOT/web"
 DIST="$WEB/dist"
 NODE24="/home/jiangl1023/.workbuddy/binaries/node/versions/24.9.0/bin/node"
 WRANGLER="/home/jiangl1023/.workbuddy/binaries/node/workspace/node_modules/wrangler/bin/wrangler.js"
-TOKEN="${CF_API_TOKEN:-${CF_API_TOKEN}}"
+TOKEN="${CF_API_TOKEN:?请设置环境变量 CF_API_TOKEN}"
 
 echo "=== DramaForge 部署（wrangler）==="
 
